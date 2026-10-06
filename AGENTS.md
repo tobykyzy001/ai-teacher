@@ -9,7 +9,7 @@
 - 前端：Vue 3 + TypeScript + Vite + Pinia + Naive UI，**用 pnpm**
 - 已知坑 1：本机 pnpm 11 默认拒绝依赖安装脚本（esbuild、vue-demi 需要），白名单键名是 **`allowBuilds`**（v11 新名，不是 v10 的 `onlyBuiltDependencies`，也不能写 package.json 的 `pnpm` 字段），已配在 `pnpm-workspace.yaml`；全局版在 `C:\Users\45108\AppData\Local\pnpm\config\config.yaml`
 - 已知坑 2：`vite.config.ts` 的 `server.watch.ignored` 必须忽略 `src-tauri/target/**`，否则 `tauri dev` 里 vite 因监视 cargo 正在写的 exe 而 EBUSY 崩溃
-- 已知坑 3：本机连不通 github.com，`pnpm tauri build` 打 MSI 时内置下载 WiX 会超时。WiX 3.14 已手动放至 `%LOCALAPPDATA%\tauri\WixTools314`（nuget 包 `wix/3.14.1` 的 tools/ 目录拍平即根布局），目录存在则跳过下载直接打包
+- 已知坑 3：安装包目标是 **NSIS**（`tauri.conf.json` `bundle.targets`，简体中文界面配在 **`bundle.windows.nsis.languages`**，注意不是 `bundle.nsis`，直接放 `bundle` 下会 schema 报错）。NSIS 工具链由 CLI 首次构建时自动下载并缓存到 `%LOCALAPPDATA%\tauri\NSIS`，之后离线可打包；若哪天切回 MSI，注意打 MSI 需 WiX 且 WiX 下载走 github.com 可能超时
 - 后端：Rust（tauri 2, rusqlite, reqwest, zip+quick-xml, pdf-extract），SQLite + 文件存储，数据全部在用户 app_data_dir
 
 ## 常用命令
