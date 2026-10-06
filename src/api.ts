@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 
 // ---------- 类型定义（与 Rust 端 serde 序列化出的 JSON 一一对应） ----------
 
@@ -80,11 +80,27 @@ export interface UnitSuggestion {
 export interface TodayPlan {
   due_reviews: ReviewItem[];
   next_units: UnitSuggestion[]; // 每本在读的书的下一个未学单元
+  reviewed_today: number; // 今日已完成的复习数（答题与自评都算）
+  due_total: number; // 今日应复习总数 = reviewed_today + 剩余到期
+  streak_days: number; // 连续学习天数
 }
 
 export interface ReviewTask {
   item: ReviewItem;
   question: QuizQuestion | null;
+}
+
+export interface WrongQuestion {
+  question_id: number;
+  unit_id: number;
+  unit_title: string;
+  book_id: number;
+  book_title: string;
+  stem: string;
+  knowledge_point: string;
+  wrong_count: number;
+  last_wrong_at: string; // ISO 时间
+  resolved: boolean; // 重练答对后置 true，永不删除
 }
 
 export interface BookDetail {
@@ -106,6 +122,14 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
   }
 }
 
+// 流式参数：给定 onDelta 时通过 Channel 接收增量文本，否则不传该参数
+function streamArg(onDelta?: (s: string) => void): Record<string, unknown> {
+  if (!onDelta) return {};
+  const ch = new Channel<string>();
+  ch.onmessage = onDelta;
+  return { onProgress: ch };
+}
+
 export const api = {
   // 设置
   getSettings: () => call<LlmSettings>("get_settings"),
@@ -123,15 +147,27 @@ export const api = {
 
   // 领读
   getUnitContent: (unitId: number) => call<UnitContent>("get_unit_content", { unitId }),
-  startReading: (unitId: number) => call<ReadingSession>("start_reading", { unitId }),
-  ask: (unitId: number, question: string) => call<string>("ask", { unitId, question }),
+  startReading: (unitId: number, onDelta?: (s: string) => void) =>
+    call<ReadingSession>("start_reading", { unitId, ...streamArg(onDelta) }),
+  ask: (unitId: number, question: string, onDelta?: (s: string) => void) =>
+    call<string>("ask", { unitId, question, ...streamArg(onDelta) }),
+  askSelection: (unitId: number, quote: string, question: string, onDelta?: (s: string) => void) =>
+    call<string>("ask_selection", { unitId, quote, question, ...streamArg(onDelta) }),
 
   // 做题
   generateQuiz: (unitId: number) => call<QuizQuestion[]>("generate_quiz", { unitId }),
   submitAnswer: (questionId: number, givenAnswer: string) =>
     call<GradeResult>("submit_answer", { questionId, givenAnswer }),
+  getQuestion: (questionId: number) => call<QuizQuestion>("get_question", { questionId }),
 
   // 复习
   startReview: (itemId: number) => call<ReviewTask>("start_review", { itemId }),
   submitReview: (itemId: number, passed: boolean) => call<void>("submit_review", { itemId, passed }),
+
+  // 错题本
+  listWrongQuestions: (filter: { bookId?: number | null; unitId?: number | null }) =>
+    call<WrongQuestion[]>("list_wrong_questions", {
+      bookId: filter.bookId ?? null,
+      unitId: filter.unitId ?? null,
+    }),
 };

@@ -150,6 +150,9 @@ pub struct UnitSuggestion {
 pub struct TodayPlan {
     pub due_reviews: Vec<ReviewItem>,
     pub next_units: Vec<UnitSuggestion>,
+    pub reviewed_today: i64,
+    pub due_total: i64,
+    pub streak_days: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,4 +165,19 @@ pub struct ReviewTask {
 pub struct BookDetail {
     pub book: BookSummary,
     pub units: Vec<Unit>,
+}
+
+/// 错题条目：绝不包含 answer / explanation 字段。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WrongQuestion {
+    pub question_id: i64,
+    pub unit_id: i64,
+    pub unit_title: String,
+    pub book_id: i64,
+    pub book_title: String,
+    pub stem: String,
+    pub knowledge_point: String,
+    pub wrong_count: i64,
+    pub last_wrong_at: String,
+    pub resolved: bool,
 }

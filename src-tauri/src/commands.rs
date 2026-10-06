@@ -54,18 +54,49 @@ pub fn save_settings_to(app_data_dir: &Path, settings: &LlmSettings) -> Result<(
     ConfigStore::new(config_path(app_data_dir)).save(settings)
 }
 
+/// 前一单元上下文：优先用已存的单元摘要，否则取上一单元正文前 300 字符。
+fn prev_context(db: &Db, unit: &UnitRow) -> Option<String> {
+    let prev = db.prev_unit(unit.id).ok()??;
+    if let Some(summary) = db.get_unit_summary(prev.id).ok().flatten() {
+        return Some(format!("《{}》：{}", prev.title, summary));
+    }
+    let content = read_unit_content(&prev).ok()?;
+    let excerpt: String = content.chars().take(300).collect();
+    Some(format!("《{}》：{}", prev.title, excerpt))
+}
+
 pub async fn start_reading_impl(
     db: &Db,
     settings: &LlmSettings,
     unit_id: i64,
+    on_explain: &mut (dyn FnMut(&str) + Send),
 ) -> Result<ReadingSession, String> {
     let (unit, _book_title) = db
         .get_unit_with_book_title(unit_id)
         .map_err(|e| e.to_string())?
         .ok_or("未找到该单元")?;
     let content = read_unit_content(&unit)?;
-    let explanation = llm::explain(settings, &content).await?;
+    let prev_ctx = prev_context(db, &unit);
+    let explanation =
+        llm::explain_stream(settings, &content, prev_ctx.as_deref(), on_explain).await?;
     let knowledge_points = llm::knowledge_points(settings, &content).await?;
+
+    // 首次学习本单元时生成摘要（尽力而为，失败不影响阅读）
+    if db
+        .get_unit_summary(unit_id)
+        .map_err(|e| e.to_string())?
+        .is_none()
+    {
+        match llm::summarize(settings, &content).await {
+            Ok(summary) => {
+                let updated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                if let Err(e) = db.upsert_unit_summary(unit_id, &summary, &updated_at) {
+                    eprintln!("保存单元摘要失败：{e}");
+                }
+            }
+            Err(e) => eprintln!("生成单元摘要失败（忽略）：{e}"),
+        }
+    }
 
     if unit.status != UnitStatus::Done.as_str() {
         db.update_unit_progress(unit_id, UnitStatus::Reading.as_str(), unit.mastery)
@@ -99,13 +130,40 @@ pub async fn ask_impl(
     settings: &LlmSettings,
     unit_id: i64,
     question: &str,
+    on_delta: &mut (dyn FnMut(&str) + Send),
 ) -> Result<String, String> {
     let unit = db
         .get_unit(unit_id)
         .map_err(|e| e.to_string())?
         .ok_or("未找到该单元")?;
     let content = read_unit_content(&unit)?;
-    llm::ask(settings, &content, question).await
+    let prev_ctx = prev_context(db, &unit);
+    llm::ask_stream(settings, &content, prev_ctx.as_deref(), question, on_delta).await
+}
+
+pub async fn ask_selection_impl(
+    db: &Db,
+    settings: &LlmSettings,
+    unit_id: i64,
+    quote: &str,
+    question: &str,
+    on_delta: &mut (dyn FnMut(&str) + Send),
+) -> Result<String, String> {
+    let unit = db
+        .get_unit(unit_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("未找到该单元")?;
+    let content = read_unit_content(&unit)?;
+    let prev_ctx = prev_context(db, &unit);
+    llm::ask_selection_stream(
+        settings,
+        &content,
+        prev_ctx.as_deref(),
+        quote,
+        question,
+        on_delta,
+    )
+    .await
 }
 
 pub async fn generate_quiz_impl(
@@ -186,6 +244,8 @@ pub async fn submit_answer_impl(
 
     let graded_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     db.insert_attempt(question_id, given_answer, correct, &graded_at)
+        .map_err(|e| e.to_string())?;
+    db.insert_log(&scheduler::due_date(today(), 0), "answer")
         .map_err(|e| e.to_string())?;
 
     if !correct {
@@ -371,9 +431,9 @@ pub fn remove_book_impl(db: &Db, app_data_dir: &Path, book_id: i64) -> Result<()
 }
 
 pub fn get_today_impl(db: &Db) -> Result<TodayPlan, String> {
-    let due_reviews = db
-        .list_due_reviews(&scheduler::due_date(today(), 0))
-        .map_err(|e| e.to_string())?;
+    let today = today();
+    let today_str = scheduler::due_date(today, 0);
+    let due_reviews = db.list_due_reviews(&today_str).map_err(|e| e.to_string())?;
     let next_units = db
         .next_unread_units()
         .map_err(|e| e.to_string())?
@@ -384,10 +444,40 @@ pub fn get_today_impl(db: &Db) -> Result<TodayPlan, String> {
             unit,
         })
         .collect();
+    let reviewed_today = db
+        .count_log_on(&today_str, "review")
+        .map_err(|e| e.to_string())?;
+    let due_total = reviewed_today + due_reviews.len() as i64;
+    let streak = streak_days(db, today)?;
     Ok(TodayPlan {
         due_reviews,
         next_units,
+        reviewed_today,
+        due_total,
+        streak_days: streak,
     })
+}
+
+/// 连续学习天数：今天没记录就从昨天起往前数，遇到第一个空档即止。
+fn streak_days(db: &Db, today: chrono::NaiveDate) -> Result<i64, String> {
+    let logged = |d: chrono::NaiveDate| -> Result<bool, String> {
+        db.has_log_on(&scheduler::due_date(d, 0))
+            .map_err(|e| e.to_string())
+    };
+    let mut day = if logged(today)? {
+        today
+    } else {
+        today - chrono::Duration::days(1)
+    };
+    let mut streak = 0i64;
+    for _ in 0..3650 {
+        if !logged(day)? {
+            break;
+        }
+        streak += 1;
+        day = day - chrono::Duration::days(1);
+    }
+    Ok(streak)
 }
 
 pub fn start_review_impl(db: &Db, item_id: i64) -> Result<ReviewTask, String> {
@@ -416,7 +506,28 @@ pub fn submit_review_impl(db: &Db, item_id: i64, passed: bool) -> Result<(), Str
     let due = scheduler::due_date(today(), interval);
     db.update_review_schedule(item_id, reps, ease, interval, &due)
         .map_err(|e| e.to_string())?;
+    db.insert_log(&scheduler::due_date(today(), 0), "review")
+        .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+pub fn get_question_impl(db: &Db, question_id: i64) -> Result<QuizQuestion, String> {
+    let row = db
+        .get_question(question_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("未找到该题目")?;
+    Ok(question_to_public(&row))
+}
+
+pub fn list_wrong_questions_impl(
+    db: &Db,
+    book_id: Option<i64>,
+    unit_id: Option<i64>,
+) -> Result<Vec<WrongQuestion>, String> {
+    let rows = db
+        .list_wrong_questions(book_id, unit_id)
+        .map_err(|e| e.to_string())?;
+    Ok(rows.into_iter().map(Into::into).collect())
 }
 
 // ---------- Tauri 命令 ----------
@@ -482,9 +593,13 @@ pub fn get_unit_content(state: State<'_, AppState>, unit_id: i64) -> Result<Unit
 pub async fn start_reading(
     state: State<'_, AppState>,
     unit_id: i64,
+    on_progress: tauri::ipc::Channel<String>,
 ) -> Result<ReadingSession, String> {
     let settings = load_settings(&state.app_data_dir);
-    start_reading_impl(&state.db, &settings, unit_id).await
+    let mut on_explain = |d: &str| {
+        let _ = on_progress.send(d.to_string());
+    };
+    start_reading_impl(&state.db, &settings, unit_id, &mut on_explain).await
 }
 
 #[tauri::command]
@@ -492,9 +607,36 @@ pub async fn ask(
     state: State<'_, AppState>,
     unit_id: i64,
     question: String,
+    on_progress: tauri::ipc::Channel<String>,
 ) -> Result<String, String> {
     let settings = load_settings(&state.app_data_dir);
-    ask_impl(&state.db, &settings, unit_id, &question).await
+    let mut on_delta = |d: &str| {
+        let _ = on_progress.send(d.to_string());
+    };
+    ask_impl(&state.db, &settings, unit_id, &question, &mut on_delta).await
+}
+
+#[tauri::command]
+pub async fn ask_selection(
+    state: State<'_, AppState>,
+    unit_id: i64,
+    quote: String,
+    question: String,
+    on_progress: tauri::ipc::Channel<String>,
+) -> Result<String, String> {
+    let settings = load_settings(&state.app_data_dir);
+    let mut on_delta = |d: &str| {
+        let _ = on_progress.send(d.to_string());
+    };
+    ask_selection_impl(
+        &state.db,
+        &settings,
+        unit_id,
+        &quote,
+        &question,
+        &mut on_delta,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -524,6 +666,20 @@ pub fn start_review(state: State<'_, AppState>, item_id: i64) -> Result<ReviewTa
 #[tauri::command]
 pub fn submit_review(state: State<'_, AppState>, item_id: i64, passed: bool) -> Result<(), String> {
     submit_review_impl(&state.db, item_id, passed)
+}
+
+#[tauri::command]
+pub fn get_question(state: State<'_, AppState>, question_id: i64) -> Result<QuizQuestion, String> {
+    get_question_impl(&state.db, question_id)
+}
+
+#[tauri::command]
+pub fn list_wrong_questions(
+    state: State<'_, AppState>,
+    book_id: Option<i64>,
+    unit_id: Option<i64>,
+) -> Result<Vec<WrongQuestion>, String> {
+    list_wrong_questions_impl(&state.db, book_id, unit_id)
 }
 
 #[cfg(test)]
@@ -570,7 +726,9 @@ mod tests {
         let (db, dir, unit_id) = setup_unit("reading");
         let settings = LlmSettings::default();
 
-        let session = start_reading_impl(&db, &settings, unit_id).await.unwrap();
+        let session = start_reading_impl(&db, &settings, unit_id, &mut |_: &str| {})
+            .await
+            .unwrap();
         assert_eq!(session.knowledge_points.len(), 3);
         assert!(session.explanation.contains("背景引入"));
 
@@ -584,7 +742,9 @@ mod tests {
         assert!(items.iter().all(|i| i.unit_title == "第一章"));
 
         // 再次进入：不重复创建复习项
-        let _ = start_reading_impl(&db, &settings, unit_id).await.unwrap();
+        let _ = start_reading_impl(&db, &settings, unit_id, &mut |_: &str| {})
+            .await
+            .unwrap();
         assert_eq!(db.list_due_reviews(&tomorrow).unwrap().len(), 3);
         assert!(db.has_review_items(unit_id).unwrap());
 
@@ -596,7 +756,7 @@ mod tests {
         std::env::set_var("AI_TEACHER_MOCK_LLM", "1");
         let (db, dir, unit_id) = setup_unit("reading-done");
         db.update_unit_progress(unit_id, "done", Some(0.9)).unwrap();
-        start_reading_impl(&db, &LlmSettings::default(), unit_id)
+        start_reading_impl(&db, &LlmSettings::default(), unit_id, &mut |_: &str| {})
             .await
             .unwrap();
         let unit = db.get_unit(unit_id).unwrap().unwrap();
@@ -716,10 +876,216 @@ mod tests {
     async fn ask_impl_returns_mock_answer() {
         std::env::set_var("AI_TEACHER_MOCK_LLM", "1");
         let (db, dir, unit_id) = setup_unit("ask");
-        let out = ask_impl(&db, &LlmSettings::default(), unit_id, "什么是记忆？")
+        let mut deltas: Vec<String> = Vec::new();
+        let out = ask_impl(
+            &db,
+            &LlmSettings::default(),
+            unit_id,
+            "什么是记忆？",
+            &mut |d: &str| deltas.push(d.to_string()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out, "mock 回答：什么是记忆？");
+        assert!(deltas.len() >= 2, "mock 回答应分多段推送");
+        assert_eq!(deltas.concat(), out);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn start_reading_streams_deltas_and_saves_summary() {
+        std::env::set_var("AI_TEACHER_MOCK_LLM", "1");
+        let (db, dir, unit_id) = setup_unit("streaming");
+        let settings = LlmSettings::default();
+
+        let mut deltas: Vec<String> = Vec::new();
+        let session = start_reading_impl(&db, &settings, unit_id, &mut |d: &str| {
+            deltas.push(d.to_string());
+        })
+        .await
+        .unwrap();
+        assert!(deltas.len() >= 2, "mock 讲解应分多段推送");
+        assert_eq!(deltas.concat(), session.explanation);
+        assert_eq!(
+            db.get_unit_summary(unit_id).unwrap().as_deref(),
+            Some("mock 摘要")
+        );
+
+        // 第二次进入同一单元：不报错，已有摘要不被覆盖
+        db.upsert_unit_summary(unit_id, "手工摘要", "2026-10-06 12:00:00")
+            .unwrap();
+        start_reading_impl(&db, &settings, unit_id, &mut |_: &str| {})
             .await
             .unwrap();
-        assert_eq!(out, "mock 回答：什么是记忆？");
+        assert_eq!(
+            db.get_unit_summary(unit_id).unwrap().as_deref(),
+            Some("手工摘要")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn ask_selection_impl_streams_mock_answer() {
+        std::env::set_var("AI_TEACHER_MOCK_LLM", "1");
+        let (db, dir, unit_id) = setup_unit("selection");
+        let mut deltas: Vec<String> = Vec::new();
+        let out = ask_selection_impl(
+            &db,
+            &LlmSettings::default(),
+            unit_id,
+            "选中的原文句子",
+            "这句话什么意思？",
+            &mut |d: &str| deltas.push(d.to_string()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out, "mock 选段回答：这句话什么意思？");
+        assert!(deltas.len() >= 2, "mock 选段回答应分多段推送");
+        assert_eq!(deltas.concat(), out);
+
+        assert!(ask_selection_impl(
+            &db,
+            &LlmSettings::default(),
+            9999,
+            "选",
+            "问",
+            &mut |_: &str| {}
+        )
+        .await
+        .is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn submit_answer_and_review_write_learning_log() {
+        std::env::set_var("AI_TEACHER_MOCK_LLM", "1");
+        let (db, dir, unit_id) = setup_unit("log");
+        let settings = LlmSettings::default();
+        let today_str = scheduler::due_date(today(), 0);
+
+        let questions = generate_quiz_impl(&db, &settings, unit_id).await.unwrap();
+        submit_answer_impl(&db, &settings, questions[0].id, "A")
+            .await
+            .unwrap();
+        assert_eq!(db.count_log_on(&today_str, "answer").unwrap(), 1);
+        assert_eq!(db.count_log_on(&today_str, "review").unwrap(), 0);
+
+        let item_id = db
+            .insert_review_item(unit_id, "要点甲", None, 2.5, 1, 0, "2026-10-01", "study")
+            .unwrap();
+        submit_review_impl(&db, item_id, true).unwrap();
+        assert_eq!(db.count_log_on(&today_str, "review").unwrap(), 1);
+        assert_eq!(db.count_log_on(&today_str, "answer").unwrap(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn today_plan_stats_and_streak() {
+        let (db, dir, unit_id) = setup_unit("today-stats");
+        db.insert_review_item(
+            unit_id,
+            "要点甲",
+            None,
+            2.5,
+            1,
+            0,
+            &scheduler::due_date(today(), 0),
+            "study",
+        )
+        .unwrap();
+
+        // 无任何学习记录
+        let plan = get_today_impl(&db).unwrap();
+        assert_eq!(plan.due_reviews.len(), 1);
+        assert_eq!(plan.reviewed_today, 0);
+        assert_eq!(plan.due_total, 1);
+        assert_eq!(plan.streak_days, 0);
+
+        // 今天没记录、昨天有 → streak >= 1；再前一天也有 → 2；前天之前空一天 → 断档
+        let d = |n: i64| scheduler::due_date(today() - Duration::days(n), 0);
+        db.insert_log(&d(1), "review").unwrap();
+        db.insert_log(&d(2), "answer").unwrap();
+        db.insert_log(&d(4), "review").unwrap();
+
+        let plan = get_today_impl(&db).unwrap();
+        assert_eq!(plan.streak_days, 2, "昨天+前天连续，大前天空档");
+
+        // 今天复习一次：reviewed_today=1、due_total=2、streak 接上今天变 3
+        db.insert_log(&scheduler::due_date(today(), 0), "review")
+            .unwrap();
+        let plan = get_today_impl(&db).unwrap();
+        assert_eq!(plan.reviewed_today, 1);
+        assert_eq!(plan.due_total, 2);
+        assert_eq!(plan.streak_days, 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn list_wrong_questions_end_to_end() {
+        std::env::set_var("AI_TEACHER_MOCK_LLM", "1");
+        let (db, dir, unit_id) = setup_unit("wrong-questions");
+        let settings = LlmSettings::default();
+        let book_id = db.get_unit(unit_id).unwrap().unwrap().book_id;
+
+        let questions = generate_quiz_impl(&db, &settings, unit_id).await.unwrap();
+        let mcq: Vec<&QuizQuestion> = questions.iter().filter(|q| q.qtype == QType::Mcq).collect();
+        // 第二道单选题正确答案是 B，答 A → 错
+        submit_answer_impl(&db, &settings, mcq[1].id, "A")
+            .await
+            .unwrap();
+
+        let wrongs = list_wrong_questions_impl(&db, None, None).unwrap();
+        assert_eq!(wrongs.len(), 1);
+        assert_eq!(wrongs[0].question_id, mcq[1].id);
+        assert_eq!(wrongs[0].wrong_count, 1);
+        assert!(!wrongs[0].resolved);
+        assert_eq!(wrongs[0].unit_title, "第一章");
+        assert_eq!(wrongs[0].book_title, "测试书");
+        // 序列化给前端的错题不包含答案
+        let json = serde_json::to_string(&wrongs[0]).unwrap();
+        assert!(!json.contains("answer"));
+        assert!(!json.contains("explanation"));
+
+        // 之后答对 → resolved 翻转，但仍在错题列表；过滤条件同时生效
+        submit_answer_impl(&db, &settings, mcq[1].id, "B")
+            .await
+            .unwrap();
+        let wrongs = list_wrong_questions_impl(&db, Some(book_id), Some(unit_id)).unwrap();
+        assert_eq!(wrongs.len(), 1);
+        assert!(wrongs[0].resolved);
+
+        assert!(list_wrong_questions_impl(&db, Some(9999), None)
+            .unwrap()
+            .is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn get_question_impl_public_shape() {
+        let (db, dir, unit_id) = setup_unit("get-question");
+        let question_id = db
+            .insert_question(
+                unit_id,
+                "mcq",
+                "题干是什么？",
+                &opts(&["A. 甲", "B. 乙", "C. 丙", "D. 丁"]),
+                "A",
+                "秘密解析",
+                "要点甲",
+            )
+            .unwrap();
+
+        let q = get_question_impl(&db, question_id).unwrap();
+        assert_eq!(q.id, question_id);
+        assert_eq!(q.unit_id, unit_id);
+        assert_eq!(q.stem, "题干是什么？");
+        assert_eq!(q.options.len(), 4);
+        let json = serde_json::to_string(&q).unwrap();
+        assert!(!json.contains("answer"));
+        assert!(!json.contains("explanation"));
+        assert!(!json.contains("秘密"));
+
+        assert!(get_question_impl(&db, 9999).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

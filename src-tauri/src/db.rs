@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::models::{BookSummary, ReviewItem, Unit, UnitStatus};
+use crate::models::{BookSummary, ReviewItem, Unit, UnitStatus, WrongQuestion};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -65,11 +65,22 @@ CREATE TABLE IF NOT EXISTS review_items (
     due_date TEXT NOT NULL,
     created_from TEXT NOT NULL DEFAULT 'study'
 );
+CREATE TABLE IF NOT EXISTS unit_summaries (
+    unit_id INTEGER PRIMARY KEY REFERENCES units(id) ON DELETE CASCADE,
+    summary TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS learning_log (
+    id INTEGER PRIMARY KEY,
+    logged_date TEXT NOT NULL,
+    kind TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_units_book ON units(book_id, idx);
 CREATE INDEX IF NOT EXISTS idx_questions_unit ON questions(unit_id);
 CREATE INDEX IF NOT EXISTS idx_attempts_question ON attempts(question_id, id);
 CREATE INDEX IF NOT EXISTS idx_review_due ON review_items(due_date, id);
 CREATE INDEX IF NOT EXISTS idx_review_unit ON review_items(unit_id);
+CREATE INDEX IF NOT EXISTS idx_log_date ON learning_log(logged_date);
 ";
 
 #[derive(Debug, Clone)]
@@ -127,6 +138,38 @@ impl From<ReviewRow> for ReviewItem {
             knowledge_point: r.knowledge_point,
             question_id: r.question_id,
             due_date: r.due_date,
+        }
+    }
+}
+
+/// 错题聚合行：wrong_count 只统计答错次数，resolved 以最近一次作答是否正确为准。
+#[derive(Debug, Clone)]
+pub struct WrongQuestionRow {
+    pub question_id: i64,
+    pub unit_id: i64,
+    pub unit_title: String,
+    pub book_id: i64,
+    pub book_title: String,
+    pub stem: String,
+    pub knowledge_point: String,
+    pub wrong_count: i64,
+    pub last_wrong_at: String,
+    pub resolved: bool,
+}
+
+impl From<WrongQuestionRow> for WrongQuestion {
+    fn from(r: WrongQuestionRow) -> Self {
+        WrongQuestion {
+            question_id: r.question_id,
+            unit_id: r.unit_id,
+            unit_title: r.unit_title,
+            book_id: r.book_id,
+            book_title: r.book_title,
+            stem: r.stem,
+            knowledge_point: r.knowledge_point,
+            wrong_count: r.wrong_count,
+            last_wrong_at: r.last_wrong_at,
+            resolved: r.resolved,
         }
     }
 }
@@ -583,6 +626,138 @@ impl Db {
             rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
         })
     }
+
+    // ---------- unit summaries ----------
+
+    pub fn upsert_unit_summary(
+        &self,
+        unit_id: i64,
+        summary: &str,
+        updated_at: &str,
+    ) -> Result<(), DbError> {
+        self.with_conn(|c| {
+            c.execute(
+                "INSERT OR REPLACE INTO unit_summaries (unit_id, summary, updated_at) VALUES (?1, ?2, ?3)",
+                params![unit_id, summary, updated_at],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn get_unit_summary(&self, unit_id: i64) -> Result<Option<String>, DbError> {
+        self.with_conn(|c| {
+            c.query_row(
+                "SELECT summary FROM unit_summaries WHERE unit_id = ?1",
+                params![unit_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+    }
+
+    /// 同一本书中 idx 小于当前单元的最大者（上一单元）。
+    pub fn prev_unit(&self, unit_id: i64) -> Result<Option<UnitRow>, DbError> {
+        self.with_conn(|c| {
+            c.query_row(
+                "SELECT id, book_id, idx, title, content_path, status, mastery FROM units
+                 WHERE book_id = (SELECT book_id FROM units WHERE id = ?1)
+                   AND idx < (SELECT idx FROM units WHERE id = ?1)
+                 ORDER BY idx DESC LIMIT 1",
+                params![unit_id],
+                map_unit_row,
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+    }
+
+    // ---------- learning log ----------
+
+    pub fn insert_log(&self, date: &str, kind: &str) -> Result<(), DbError> {
+        self.with_conn(|c| {
+            c.execute(
+                "INSERT INTO learning_log (logged_date, kind) VALUES (?1, ?2)",
+                params![date, kind],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn count_log_on(&self, date: &str, kind: &str) -> Result<i64, DbError> {
+        self.with_conn(|c| {
+            let n: i64 = c.query_row(
+                "SELECT COUNT(*) FROM learning_log WHERE logged_date = ?1 AND kind = ?2",
+                params![date, kind],
+                |row| row.get(0),
+            )?;
+            Ok(n)
+        })
+    }
+
+    pub fn has_log_on(&self, date: &str) -> Result<bool, DbError> {
+        self.with_conn(|c| {
+            let exists: i64 = c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM learning_log WHERE logged_date = ?1)",
+                params![date],
+                |row| row.get(0),
+            )?;
+            Ok(exists != 0)
+        })
+    }
+
+    // ---------- wrong questions ----------
+
+    /// 至少答错过的题目，按最近一次答错时间倒序；resolved = 最近一次作答是否正确。
+    pub fn list_wrong_questions(
+        &self,
+        book_id: Option<i64>,
+        unit_id: Option<i64>,
+    ) -> Result<Vec<WrongQuestionRow>, DbError> {
+        let wrong_count_subquery =
+            "(SELECT COUNT(*) FROM attempts w WHERE w.question_id = q.id AND w.correct = 0)";
+        let mut sql = format!(
+            "SELECT q.id, u.id, u.title, b.id, b.title, q.stem, q.knowledge_point,
+                    {wrong_count_subquery} AS wrong_count,
+                    (SELECT MAX(w2.graded_at) FROM attempts w2 WHERE w2.question_id = q.id AND w2.correct = 0) AS last_wrong_at,
+                    COALESCE((SELECT a3.correct FROM attempts a3 WHERE a3.question_id = q.id ORDER BY a3.id DESC LIMIT 1), 0) AS latest_correct
+             FROM questions q
+             JOIN units u ON q.unit_id = u.id
+             JOIN books b ON u.book_id = b.id"
+        );
+        let mut clauses = vec![format!("{wrong_count_subquery} > 0")];
+        let mut values: Vec<Option<i64>> = Vec::new();
+        if let Some(b) = book_id {
+            clauses.push(format!("b.id = ?{}", values.len() + 1));
+            values.push(Some(b));
+        }
+        if let Some(u) = unit_id {
+            clauses.push(format!("u.id = ?{}", values.len() + 1));
+            values.push(Some(u));
+        }
+        sql.push_str(" WHERE ");
+        sql.push_str(&clauses.join(" AND "));
+        sql.push_str(" ORDER BY last_wrong_at DESC, q.id DESC");
+
+        self.with_conn(move |c| {
+            let mut stmt = c.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(values.iter()), |row| {
+                Ok(WrongQuestionRow {
+                    question_id: row.get(0)?,
+                    unit_id: row.get(1)?,
+                    unit_title: row.get(2)?,
+                    book_id: row.get(3)?,
+                    book_title: row.get(4)?,
+                    stem: row.get(5)?,
+                    knowledge_point: row.get(6)?,
+                    wrong_count: row.get(7)?,
+                    last_wrong_at: row.get(8)?,
+                    resolved: row.get::<_, i64>(9)? != 0,
+                })
+            })?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        })
+    }
 }
 
 fn map_unit(row: &rusqlite::Row<'_>) -> rusqlite::Result<Unit> {
@@ -807,5 +982,185 @@ mod tests {
         assert!(db.has_review_items(u).unwrap());
         let kps = db.knowledge_points_of_unit(u).unwrap();
         assert_eq!(kps, vec!["要点".to_string()]);
+    }
+
+    #[test]
+    fn unit_summary_upsert_get_and_cascade() {
+        let db = Db::open_in_memory().unwrap();
+        let b = db
+            .insert_book("书", "/x/sum.md", "md", "2026-10-01")
+            .unwrap();
+        let u = db.insert_unit(b, 0, "第一章", "/c/sum0.txt").unwrap();
+
+        assert!(db.get_unit_summary(u).unwrap().is_none());
+        db.upsert_unit_summary(u, "第一版摘要", "2026-10-01 08:00:00")
+            .unwrap();
+        assert_eq!(
+            db.get_unit_summary(u).unwrap().as_deref(),
+            Some("第一版摘要")
+        );
+        db.upsert_unit_summary(u, "第二版摘要", "2026-10-02 08:00:00")
+            .unwrap();
+        assert_eq!(
+            db.get_unit_summary(u).unwrap().as_deref(),
+            Some("第二版摘要")
+        );
+
+        db.delete_book(b).unwrap();
+        assert!(db.get_unit_summary(u).unwrap().is_none());
+    }
+
+    #[test]
+    fn prev_unit_returns_same_book_neighbor() {
+        let db = Db::open_in_memory().unwrap();
+        let b1 = db
+            .insert_book("书一", "/x/p1.md", "md", "2026-10-01")
+            .unwrap();
+        let b2 = db
+            .insert_book("书二", "/x/p2.md", "md", "2026-10-01")
+            .unwrap();
+        let u0 = db.insert_unit(b1, 0, "第一章", "/c/p0.txt").unwrap();
+        let u1 = db.insert_unit(b1, 1, "第二章", "/c/p1.txt").unwrap();
+        let u2 = db.insert_unit(b1, 2, "第三章", "/c/p2.txt").unwrap();
+        let other = db.insert_unit(b2, 5, "另一本书", "/c/p3.txt").unwrap();
+
+        let prev = db.prev_unit(u2).unwrap().unwrap();
+        assert_eq!(prev.id, u1);
+        assert_eq!(prev.title, "第二章");
+        assert_eq!(
+            db.prev_unit(u1).unwrap().map(|u| u.id),
+            Some(u0),
+            "上一单元应取 idx 最大的邻居"
+        );
+        assert!(db.prev_unit(u0).unwrap().is_none());
+        // 不跨书：另一本书里 idx 更大的单元不算
+        assert!(db.prev_unit(other).unwrap().is_none());
+        assert!(db.prev_unit(9999).unwrap().is_none());
+    }
+
+    #[test]
+    fn learning_log_count_and_exists() {
+        let db = Db::open_in_memory().unwrap();
+        assert!(!db.has_log_on("2026-10-06").unwrap());
+        db.insert_log("2026-10-06", "review").unwrap();
+        db.insert_log("2026-10-06", "review").unwrap();
+        db.insert_log("2026-10-06", "answer").unwrap();
+
+        assert_eq!(db.count_log_on("2026-10-06", "review").unwrap(), 2);
+        assert_eq!(db.count_log_on("2026-10-06", "answer").unwrap(), 1);
+        assert_eq!(db.count_log_on("2026-10-05", "review").unwrap(), 0);
+        assert!(db.has_log_on("2026-10-06").unwrap());
+        assert!(!db.has_log_on("2026-10-05").unwrap());
+    }
+
+    #[test]
+    fn wrong_question_aggregation() {
+        let db = Db::open_in_memory().unwrap();
+        let b1 = db
+            .insert_book("书一", "/x/w1.md", "md", "2026-10-01")
+            .unwrap();
+        let u1 = db.insert_unit(b1, 0, "第一章", "/c/w0.txt").unwrap();
+        let u2 = db.insert_unit(b1, 1, "第二章", "/c/w1.txt").unwrap();
+        let b2 = db
+            .insert_book("书二", "/x/w2.md", "md", "2026-10-01")
+            .unwrap();
+        let u3 = db.insert_unit(b2, 0, "另一章", "/c/w2.txt").unwrap();
+
+        let q1 = db
+            .insert_question(
+                u1,
+                "mcq",
+                "题一",
+                &opts(&["A. 甲", "B. 乙", "C. 丙", "D. 丁"]),
+                "A",
+                "解析",
+                "要点一",
+            )
+            .unwrap();
+        let q2 = db
+            .insert_question(u2, "short", "题二", &[], "参考", "解析", "要点二")
+            .unwrap();
+        let q3 = db
+            .insert_question(
+                u3,
+                "mcq",
+                "题三",
+                &opts(&["A. 甲", "B. 乙", "C. 丙", "D. 丁"]),
+                "A",
+                "解析",
+                "要点三",
+            )
+            .unwrap();
+        let q4 = db
+            .insert_question(
+                u1,
+                "mcq",
+                "题四",
+                &opts(&["A. 甲", "B. 乙", "C. 丙", "D. 丁"]),
+                "A",
+                "解析",
+                "要点四",
+            )
+            .unwrap();
+
+        // q1：错两次后答对 → resolved，wrong_count 仍为 2
+        db.insert_attempt(q1, "B", false, "2026-10-01 10:00:00")
+            .unwrap();
+        db.insert_attempt(q1, "C", false, "2026-10-02 10:00:00")
+            .unwrap();
+        db.insert_attempt(q1, "A", true, "2026-10-03 10:00:00")
+            .unwrap();
+        // q2：只答错一次 → 未解决
+        db.insert_attempt(q2, "答错", false, "2026-10-04 10:00:00")
+            .unwrap();
+        // q3：另一本书的错题，时间最近
+        db.insert_attempt(q3, "B", false, "2026-10-05 10:00:00")
+            .unwrap();
+        // q4：只答对过 → 不在错题列表
+        db.insert_attempt(q4, "A", true, "2026-10-06 10:00:00")
+            .unwrap();
+
+        let all = db.list_wrong_questions(None, None).unwrap();
+        assert_eq!(
+            all.iter().map(|w| w.question_id).collect::<Vec<_>>(),
+            vec![q3, q2, q1],
+            "按最近答错时间倒序"
+        );
+        let w1 = all.iter().find(|w| w.question_id == q1).unwrap();
+        assert_eq!(w1.wrong_count, 2);
+        assert_eq!(w1.last_wrong_at, "2026-10-02 10:00:00");
+        assert!(w1.resolved);
+        assert_eq!(w1.unit_id, u1);
+        assert_eq!(w1.unit_title, "第一章");
+        assert_eq!(w1.book_id, b1);
+        assert_eq!(w1.book_title, "书一");
+        assert_eq!(w1.knowledge_point, "要点一");
+        assert_eq!(w1.stem, "题一");
+        let w2 = all.iter().find(|w| w.question_id == q2).unwrap();
+        assert!(!w2.resolved);
+        assert_eq!(w2.wrong_count, 1);
+
+        // 过滤：按书 / 按单元 / 两者同时
+        let in_b1 = db.list_wrong_questions(Some(b1), None).unwrap();
+        assert_eq!(in_b1.len(), 2);
+        assert!(in_b1.iter().all(|w| w.book_id == b1));
+        let in_u1 = db.list_wrong_questions(None, Some(u1)).unwrap();
+        assert_eq!(in_u1.len(), 1);
+        assert_eq!(in_u1[0].question_id, q1);
+        let narrowed = db.list_wrong_questions(Some(b1), Some(u2)).unwrap();
+        assert_eq!(narrowed.len(), 1);
+        assert_eq!(narrowed[0].question_id, q2);
+        assert!(db
+            .list_wrong_questions(Some(9999), None)
+            .unwrap()
+            .is_empty());
+
+        // 后续答对把 resolved 翻转为 true（仍在错题列表中）
+        db.insert_attempt(q3, "A", true, "2026-10-07 10:00:00")
+            .unwrap();
+        let w3 = db.list_wrong_questions(Some(b2), None).unwrap();
+        assert_eq!(w3.len(), 1);
+        assert!(w3[0].resolved);
+        assert_eq!(w3[0].wrong_count, 1);
     }
 }

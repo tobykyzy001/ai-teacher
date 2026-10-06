@@ -15,7 +15,12 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { BookOutline, CalendarOutline, SettingsOutline } from "@vicons/ionicons5";
+import {
+  BookmarkOutline,
+  BookOutline,
+  CalendarOutline,
+  SettingsOutline,
+} from "@vicons/ionicons5";
 import { NIcon, NLayout, NLayoutContent, NLayoutSider, NMenu, NMessageProvider } from "naive-ui";
 import { h, type Component } from "vue";
 
@@ -29,11 +34,13 @@ const router = useRouter();
 const menuOptions = [
   { label: "今日学习", key: "/today", icon: icon(CalendarOutline) },
   { label: "书架", key: "/library", icon: icon(BookOutline) },
+  { label: "错题本", key: "/wrong", icon: icon(BookmarkOutline) },
   { label: "设置", key: "/settings", icon: icon(SettingsOutline) },
 ];
 
 const activeKey = computed(() => {
   if (route.path.startsWith("/library") || route.path.startsWith("/books")) return "/library";
+  if (route.path.startsWith("/wrong")) return "/wrong";
   if (route.path.startsWith("/settings")) return "/settings";
   return "/today";
 });

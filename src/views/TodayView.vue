@@ -8,6 +8,10 @@
       <n-button quaternary size="small" @click="refresh">刷新</n-button>
     </div>
 
+    <div v-if="plan" class="stats muted small">
+      今日已复习 {{ plan.reviewed_today }}/{{ plan.due_total }} · 连续学习 {{ plan.streak_days }} 天
+    </div>
+
     <div v-if="loading && !plan" class="center-box">
       <n-spin size="large" />
     </div>
@@ -294,6 +298,10 @@ async function finishItem(passed: boolean): Promise<void> {
 </script>
 
 <style scoped>
+.stats {
+  margin: -10px 0 18px;
+}
+
 .section {
   margin-bottom: 24px;
 }

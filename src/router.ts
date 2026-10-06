@@ -9,6 +9,7 @@ export const router = createRouter({
     { path: "/books/:bookId", component: () => import("./views/BookDetailView.vue") },
     { path: "/reading/:unitId", component: () => import("./views/ReadingView.vue") },
     { path: "/quiz/:unitId", component: () => import("./views/QuizView.vue") },
+    { path: "/wrong", component: () => import("./views/WrongBookView.vue") },
     { path: "/settings", component: () => import("./views/SettingsView.vue") },
   ],
 });

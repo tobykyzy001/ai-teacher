@@ -1,3 +1,4 @@
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -106,6 +107,150 @@ fn normalize_base_url(base_url: &str) -> String {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct ChatStreamBody<'a> {
+    model: &'a str,
+    messages: &'a [ChatMessage],
+    stream: bool,
+}
+
+/// OpenAI 兼容的流式 chat/completions 调用：增量内容经 on_delta 推送，返回完整文本。
+/// 仅在拿到初始响应前重试 429/5xx；流中途出错直接报错。
+pub async fn chat_stream(
+    settings: &LlmSettings,
+    messages: Vec<ChatMessage>,
+    on_delta: &mut (dyn FnMut(&str) + Send),
+) -> Result<String, String> {
+    if settings.api_key.trim().is_empty() {
+        return Err("请先在设置中配置 API Key".to_string());
+    }
+    let url = normalize_base_url(&settings.base_url);
+    let client = reqwest::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败：{e}"))?;
+    let body = ChatStreamBody {
+        model: &settings.model,
+        messages: &messages,
+        stream: true,
+    };
+
+    let mut retries = 0u32;
+    let resp = loop {
+        let response = client
+            .post(&url)
+            .bearer_auth(&settings.api_key)
+            .json(&body)
+            .send()
+            .await;
+        let resp = match response {
+            Ok(r) => r,
+            Err(e) => return Err(format!("网络错误：{e}")),
+        };
+        let status = resp.status();
+        let retriable = status.as_u16() == 429 || status.is_server_error();
+        if retriable && retries < MAX_RETRIES {
+            retries += 1;
+            tokio::time::sleep(Duration::from_secs(1 << (retries - 1))).await;
+            continue;
+        }
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!(
+                "AI 请求失败（HTTP {}）：{}",
+                status.as_u16(),
+                truncate(&text, 300)
+            ));
+        }
+        break resp;
+    };
+
+    let mut stream = resp.bytes_stream();
+    // 只按完整行解码，原始字节先入缓冲，避免切在多字节字符中间
+    let mut pending: Vec<u8> = Vec::new();
+    let mut full = String::new();
+    let mut done = false;
+    while !done {
+        match stream.next().await {
+            Some(Ok(bytes)) => {
+                pending.extend_from_slice(&bytes);
+                while !done {
+                    let Some(pos) = pending.iter().position(|&b| b == b'\n') else {
+                        break;
+                    };
+                    let rest = pending.split_off(pos + 1);
+                    let mut line_bytes = std::mem::replace(&mut pending, rest);
+                    line_bytes.pop(); // 去掉行尾 \n
+                    let line = String::from_utf8_lossy(&line_bytes);
+                    let line = line.trim();
+                    if let Some(data) = line.strip_prefix("data:") {
+                        match parse_sse_data(data) {
+                            Some(SseEvent::Done) => done = true,
+                            Some(SseEvent::Delta(piece)) => {
+                                if !piece.is_empty() {
+                                    on_delta(&piece);
+                                    full.push_str(&piece);
+                                }
+                            }
+                            None => {}
+                        }
+                    }
+                }
+            }
+            Some(Err(e)) => return Err(format!("流式读取中断：{e}")),
+            None => break,
+        }
+    }
+    if full.trim().is_empty() {
+        return Err("AI 返回内容为空".to_string());
+    }
+    Ok(full)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SseEvent {
+    Delta(String),
+    Done,
+}
+
+/// 解析一行 SSE 的 data 负载："[DONE]" 结束帧、带内容的 delta 正常返回，其余（含垃圾行）返回 None。
+fn parse_sse_data(data: &str) -> Option<SseEvent> {
+    let payload = data.trim();
+    if payload == "[DONE]" {
+        return Some(SseEvent::Done);
+    }
+    let frame: SseFrame = serde_json::from_str(payload).ok()?;
+    let content = frame
+        .choices
+        .into_iter()
+        .next()?
+        .delta
+        .content
+        .unwrap_or_default();
+    if content.is_empty() {
+        None
+    } else {
+        Some(SseEvent::Delta(content))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SseFrame {
+    #[serde(default)]
+    choices: Vec<SseChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SseChoice {
+    delta: SseDelta,
+}
+
+#[derive(Debug, Deserialize)]
+struct SseDelta {
+    #[serde(default)]
+    content: Option<String>,
+}
+
 fn truncate(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         s.trim().to_string()
@@ -135,24 +280,57 @@ struct ChatChoiceMessage {
 const MOCK_EXPLAIN: &str =
     "# 背景引入\n<mock 讲解>\n\n## 重点梳理\n- 要点一\n- 要点二\n\n## 难点解释\n<mock>";
 
-pub async fn explain(settings: &LlmSettings, unit_text: &str) -> Result<String, String> {
-    if is_mock_enabled() {
-        return Ok(MOCK_EXPLAIN.to_string());
+/// mock 模式下把文本按字符边界切成 chunk_chars 一段，逐段推给回调，返回完整文本。
+fn stream_mock_text(text: &str, chunk_chars: usize, on_delta: &mut dyn FnMut(&str)) -> String {
+    let mut full = String::new();
+    for chunk in text
+        .chars()
+        .collect::<Vec<char>>()
+        .chunks(chunk_chars.max(1))
+    {
+        let piece: String = chunk.iter().collect();
+        on_delta(&piece);
+        full.push_str(&piece);
     }
-    chat(
-        &settings.base_url,
-        &settings.api_key,
-        &settings.model,
+    full
+}
+
+/// mock 模式下把文本切成约 n 段推送。
+fn stream_mock_n_chunks(text: &str, n: usize, on_delta: &mut dyn FnMut(&str)) -> String {
+    let chunk = text.chars().count().div_ceil(n).max(1);
+    stream_mock_text(text, chunk, on_delta)
+}
+
+/// 前一单元上下文（可选）：拼进用户消息开头，让讲解衔接上一单元。
+fn prev_context_section(prev_context: Option<&str>) -> String {
+    prev_context
+        .map(|c| format!("【前一单元内容概要】\n{c}\n\n"))
+        .unwrap_or_default()
+}
+
+pub async fn explain_stream(
+    settings: &LlmSettings,
+    unit_text: &str,
+    prev_context: Option<&str>,
+    on_delta: &mut (dyn FnMut(&str) + Send),
+) -> Result<String, String> {
+    if is_mock_enabled() {
+        return Ok(stream_mock_text(MOCK_EXPLAIN, 5, on_delta));
+    }
+    chat_stream(
+        settings,
         vec![
             ChatMessage::system("你是一位耐心、风趣的中文学习助教，擅长把材料讲得通俗易懂。"),
             ChatMessage::user(&format!(
-                "请阅读下面的学习内容，写一篇 Markdown 格式的讲解，必须包含以下三个小节：\n\
+                "{prev}请阅读下面的学习内容，写一篇 Markdown 格式的讲解，必须包含以下三个小节：\n\
                  「## 背景引入」：用一两段话介绍这章内容在讲什么、为什么值得学；\n\
                  「## 重点梳理」：用无序列表列出 3-6 个核心要点；\n\
                  「## 难点解释」：挑出 1-3 个最难理解的概念，用通俗的方式解释。\n\n\
-                 学习内容：\n{unit_text}"
+                 学习内容：\n{unit_text}",
+                prev = prev_context_section(prev_context)
             )),
         ],
+        on_delta,
     )
     .await
 }
@@ -398,22 +576,76 @@ pub async fn grade_short(
     Ok((verdict.correct, comment))
 }
 
-pub async fn ask(
+pub async fn ask_stream(
     settings: &LlmSettings,
     unit_text: &str,
+    prev_context: Option<&str>,
     question: &str,
+    on_delta: &mut (dyn FnMut(&str) + Send),
 ) -> Result<String, String> {
     if is_mock_enabled() {
-        return Ok(format!("mock 回答：{question}"));
+        return Ok(stream_mock_n_chunks(
+            &format!("mock 回答：{question}"),
+            3,
+            on_delta,
+        ));
+    }
+    chat_stream(
+        settings,
+        vec![
+            ChatMessage::system("你是一位耐心的中文学习助教，回答要准确、简洁。"),
+            ChatMessage::user(&format!(
+                "{prev}学习内容：\n{unit_text}\n\n学生的问题：{question}\n\n请基于学习内容回答问题，用中文。",
+                prev = prev_context_section(prev_context)
+            )),
+        ],
+        on_delta,
+    )
+    .await
+}
+
+pub async fn ask_selection_stream(
+    settings: &LlmSettings,
+    unit_text: &str,
+    prev_context: Option<&str>,
+    quote: &str,
+    question: &str,
+    on_delta: &mut (dyn FnMut(&str) + Send),
+) -> Result<String, String> {
+    if is_mock_enabled() {
+        return Ok(stream_mock_n_chunks(
+            &format!("mock 选段回答：{question}"),
+            3,
+            on_delta,
+        ));
+    }
+    chat_stream(
+        settings,
+        vec![
+            ChatMessage::system("你是一位耐心的中文学习助教，回答要准确、简洁。"),
+            ChatMessage::user(&format!(
+                "{prev}学习内容：\n{unit_text}\n\n【用户选中的原文】\n{quote}\n\n学生的问题：{question}\n\n请基于学习内容和选中的原文回答问题，用中文。",
+                prev = prev_context_section(prev_context)
+            )),
+        ],
+        on_delta,
+    )
+    .await
+}
+
+pub async fn summarize(settings: &LlmSettings, unit_text: &str) -> Result<String, String> {
+    if is_mock_enabled() {
+        return Ok("mock 摘要".to_string());
     }
     chat(
         &settings.base_url,
         &settings.api_key,
         &settings.model,
         vec![
-            ChatMessage::system("你是一位耐心的中文学习助教，回答要准确、简洁。"),
+            ChatMessage::system("你是一位严谨的中文学习助教，只输出摘要正文。"),
             ChatMessage::user(&format!(
-                "学习内容：\n{unit_text}\n\n学生的问题：{question}\n\n请基于学习内容回答问题，用中文。"
+                "请用 2~3 句话概括本单元核心内容（150字内），只输出摘要本身，不要任何其他文字。\n\n\
+                 学习内容：\n{unit_text}"
             )),
         ],
     )
@@ -495,12 +727,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mock_explanation_sections() {
+    async fn mock_explanation_streams_sections() {
         std::env::set_var("AI_TEACHER_MOCK_LLM", "1");
-        let out = explain(&mock_settings(), "任意内容").await.unwrap();
+        let mut deltas: Vec<String> = Vec::new();
+        let out = explain_stream(&mock_settings(), "任意内容", None, &mut |d: &str| {
+            deltas.push(d.to_string());
+        })
+        .await
+        .unwrap();
         assert!(out.contains("背景引入"));
         assert!(out.contains("重点梳理"));
         assert!(out.contains("难点解释"));
+        assert!(deltas.len() >= 2, "mock 讲解应分多段推送");
+        assert_eq!(deltas.concat(), out);
+    }
+
+    #[tokio::test]
+    async fn mock_explanation_with_prev_context() {
+        std::env::set_var("AI_TEACHER_MOCK_LLM", "1");
+        let out = explain_stream(
+            &mock_settings(),
+            "任意内容",
+            Some("《上一章》：上一章讲了基础概念"),
+            &mut |_: &str| {},
+        )
+        .await
+        .unwrap();
+        assert!(out.contains("背景引入"));
     }
 
     #[tokio::test]
@@ -559,12 +812,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mock_ask_echoes_question() {
+    async fn mock_ask_streams_three_chunks() {
         std::env::set_var("AI_TEACHER_MOCK_LLM", "1");
-        let out = ask(&mock_settings(), "内容", "什么是间隔效应？")
-            .await
-            .unwrap();
-        assert_eq!(out, "mock 回答：什么是间隔效应？");
+        let mut deltas: Vec<String> = Vec::new();
+        let out = ask_stream(
+            &mock_settings(),
+            "内容",
+            None,
+            "什么是记忆？",
+            &mut |d: &str| deltas.push(d.to_string()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out, "mock 回答：什么是记忆？");
+        assert_eq!(deltas.len(), 3);
+        assert_eq!(deltas.concat(), out);
+    }
+
+    #[tokio::test]
+    async fn mock_ask_with_prev_context() {
+        std::env::set_var("AI_TEACHER_MOCK_LLM", "1");
+        let out = ask_stream(
+            &mock_settings(),
+            "内容",
+            Some("《上一章》：概要"),
+            "什么是记忆？",
+            &mut |_: &str| {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(out, "mock 回答：什么是记忆？");
+    }
+
+    #[tokio::test]
+    async fn mock_ask_selection_streams() {
+        std::env::set_var("AI_TEACHER_MOCK_LLM", "1");
+        let mut deltas: Vec<String> = Vec::new();
+        let out = ask_selection_stream(
+            &mock_settings(),
+            "内容",
+            Some("《上一章》：概要"),
+            "选中的原文句子",
+            "这句话什么意思？",
+            &mut |d: &str| deltas.push(d.to_string()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out, "mock 选段回答：这句话什么意思？");
+        assert!(deltas.len() >= 2);
+        assert_eq!(deltas.concat(), out);
+    }
+
+    #[tokio::test]
+    async fn mock_summarize() {
+        std::env::set_var("AI_TEACHER_MOCK_LLM", "1");
+        assert_eq!(
+            summarize(&mock_settings(), "任意内容").await.unwrap(),
+            "mock 摘要"
+        );
     }
 
     #[tokio::test]
@@ -580,6 +885,141 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err, "请先在设置中配置 API Key");
+    }
+
+    #[tokio::test]
+    async fn chat_stream_empty_api_key_rejected_before_any_request() {
+        let err = chat_stream(
+            &mock_settings(),
+            vec![ChatMessage::user("hi")],
+            &mut |_: &str| {},
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, "请先在设置中配置 API Key");
+    }
+
+    /// 起一个只回一次 SSE 响应的本地 HTTP 服务，端到端验证流式解析
+    /// （响应体分两段写出，段边界大概率切在多字节字符中间）。
+    #[tokio::test]
+    async fn chat_stream_parses_sse_from_local_server() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut req: Vec<u8> = Vec::new();
+            let mut buf = [0u8; 4096];
+            let header_end = loop {
+                let n = socket.read(&mut buf).unwrap();
+                assert!(n > 0, "客户端连接被提前关闭");
+                req.extend_from_slice(&buf[..n]);
+                if let Some(pos) = req.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break pos + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&req[..header_end]).to_string();
+            let content_length: usize = headers
+                .lines()
+                .find_map(|l| {
+                    l.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                })
+                .unwrap_or(0);
+            while req.len() < header_end + content_length {
+                let n = socket.read(&mut buf).unwrap();
+                assert!(n > 0);
+                req.extend_from_slice(&buf[..n]);
+            }
+            let body = String::from_utf8_lossy(&req[header_end..]).to_string();
+            assert!(body.contains("\"stream\":true"), "请求体应为流式：{body}");
+
+            let events = "data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\n\
+                          data: {\"choices\":[{\"delta\":{\"content\":\"好，世界\"}}]}\n\n\
+                          data: {\"choices\":[{\"delta\":{}}]}\n\n\
+                          : keepalive comment\n\n\
+                          data: [DONE]\n\n";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{events}",
+                events.len()
+            );
+            let mid = response.len() / 2;
+            socket.write_all(response[..mid].as_bytes()).unwrap();
+            socket.flush().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            socket.write_all(response[mid..].as_bytes()).unwrap();
+            socket.flush().unwrap();
+        });
+
+        let settings = LlmSettings {
+            base_url: format!("http://{addr}"),
+            api_key: "sk-test".to_string(),
+            model: "m".to_string(),
+        };
+        let mut deltas: Vec<String> = Vec::new();
+        let full = chat_stream(&settings, vec![ChatMessage::user("hi")], &mut |d: &str| {
+            deltas.push(d.to_string());
+        })
+        .await
+        .unwrap();
+        assert_eq!(full, "你好，世界");
+        assert_eq!(
+            deltas,
+            vec!["你".to_string(), "好，世界".to_string()],
+            "空 delta 与注释行不应推送"
+        );
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn sse_frame_parsing() {
+        use SseEvent::{Delta, Done};
+        assert_eq!(parse_sse_data("[DONE]"), Some(Done));
+        assert_eq!(parse_sse_data("  [DONE]  "), Some(Done));
+        assert_eq!(
+            parse_sse_data(r#"{"choices":[{"delta":{"content":"你好"}}]}"#),
+            Some(Delta("你好".to_string()))
+        );
+        assert_eq!(
+            parse_sse_data(r#"{"choices":[{"delta":{"content":"a"}},{"delta":{"content":"b"}}]}"#),
+            Some(Delta("a".to_string()))
+        );
+        // 空 content 或缺失 content 的 delta：没有可推送内容
+        assert_eq!(
+            parse_sse_data(r#"{"choices":[{"delta":{"content":""}}]}"#),
+            None
+        );
+        assert_eq!(parse_sse_data(r#"{"choices":[{"delta":{}}]}"#), None);
+        assert_eq!(parse_sse_data(r#"{"choices":[]}"#), None);
+        // 垃圾行一律忽略
+        assert_eq!(parse_sse_data("event: ping"), None);
+        assert_eq!(parse_sse_data("不是 JSON"), None);
+        assert_eq!(parse_sse_data(""), None);
+    }
+
+    #[test]
+    fn mock_chunking_is_char_safe() {
+        let mut deltas: Vec<String> = Vec::new();
+        let full = stream_mock_text("你好世界ABC", 2, &mut |d| deltas.push(d.to_string()));
+        assert_eq!(full, "你好世界ABC");
+        assert_eq!(
+            deltas,
+            vec![
+                "你好".to_string(),
+                "世界".to_string(),
+                "AB".to_string(),
+                "C".to_string()
+            ]
+        );
+
+        let mut three: Vec<String> = Vec::new();
+        let full = stream_mock_n_chunks("一二三四五", 3, &mut |d| three.push(d.to_string()));
+        assert_eq!(full, "一二三四五");
+        assert_eq!(three.len(), 3);
+        assert_eq!(three.concat(), full);
     }
 
     #[test]
