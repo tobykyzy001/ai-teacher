@@ -29,20 +29,42 @@ const MIN_TAIL_CHARS: usize = 700;
 
 // ---------- 文件入口 ----------
 
-pub fn parse_file(path: &Path) -> Result<Vec<Chapter>, String> {
+/// 解析结果：章列表 + 每章所属"大节"标题（EPUB 目录层级的顶层条目；无层级时为章自身标题）
+/// + 抽取出的图片（输出文件名，字节内容，导入时写入 books/<id>/images/）。
+#[derive(Debug, Clone)]
+pub struct ParsedBook {
+    pub chapters: Vec<Chapter>,
+    pub group_titles: Vec<String>,
+    pub images: Vec<(String, Vec<u8>)>,
+}
+
+impl ParsedBook {
+    /// 无目录结构的格式（md/txt/pdf）：每章即大节。
+    fn flat(chapters: Vec<Chapter>) -> Self {
+        let group_titles = chapters.iter().map(|c| c.title.clone()).collect();
+        ParsedBook {
+            chapters,
+            group_titles,
+            images: Vec::new(),
+        }
+    }
+}
+
+/// 解析书籍文件，EPUB 保留目录层级（大节归属），其余格式每章即大节。
+pub fn parse_file_grouped(path: &Path) -> Result<ParsedBook, String> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_lowercase())
         .unwrap_or_default();
     match ext.as_str() {
-        "md" | "markdown" => Ok(parse_markdown(&read_text(path)?)),
-        "txt" => Ok(parse_txt(&read_text(path)?)),
+        "md" | "markdown" => Ok(ParsedBook::flat(parse_markdown(&read_text(path)?))),
+        "txt" => Ok(ParsedBook::flat(parse_txt(&read_text(path)?))),
         "epub" => {
             let bytes = std::fs::read(path).map_err(|e| format!("无法读取文件：{e}"))?;
-            parse_epub(&bytes)
+            parse_epub_grouped(&bytes)
         }
-        "pdf" => parse_pdf(path),
+        "pdf" => parse_pdf(path).map(ParsedBook::flat),
         _ => Err("暂不支持该文件格式，仅支持 md / txt / epub / pdf".to_string()),
     }
 }
@@ -155,7 +177,12 @@ fn parse_pdf(path: &Path) -> Result<Vec<Chapter>, String> {
 
 // ---------- EPUB ----------
 
+#[cfg(test)]
 pub fn parse_epub(bytes: &[u8]) -> Result<Vec<Chapter>, String> {
+    Ok(parse_epub_grouped(bytes)?.chapters)
+}
+
+pub fn parse_epub_grouped(bytes: &[u8]) -> Result<ParsedBook, String> {
     let mut zip =
         ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("无法读取 EPUB 文件：{e}"))?;
     let container = read_zip_text(&mut zip, "META-INF/container.xml")
@@ -166,22 +193,29 @@ pub fn parse_epub(bytes: &[u8]) -> Result<Vec<Chapter>, String> {
     let opf_data = parse_opf(&opf);
 
     let mut toc: HashMap<String, String> = HashMap::new();
+    // 目录层级：spine 文件 → 顶层目录条目标题（"第N章"即大节）
+    let mut hier: HashMap<String, String> = HashMap::new();
     if let Some(toc_id) = &opf_data.toc_id {
         if let Some(href) = opf_data.manifest.get(toc_id) {
             let path = resolve_href(&opf_dir, href);
             if let Some(ncx) = read_zip_text(&mut zip, &path) {
-                parse_ncx(&ncx, &opf_dir, &mut toc);
+                parse_ncx(&ncx, &opf_dir, &mut toc, &mut hier);
             }
         }
     }
     if let Some(href) = &opf_data.nav_href {
         let path = resolve_href(&opf_dir, href);
         if let Some(nav) = read_zip_text(&mut zip, &path) {
-            parse_nav(&nav, &opf_dir, &mut toc);
+            parse_nav(&nav, &opf_dir, &mut toc, &mut hier);
         }
     }
 
     let mut chapters = Vec::new();
+    let mut group_titles = Vec::new();
+    // 图片登记：zip 内路径 → 输出文件名（去重，同一图片多处引用只存一份）
+    let mut img_seq = 0usize;
+    let mut img_names: HashMap<String, String> = HashMap::new();
+    let mut img_pending: Vec<(String, String)> = Vec::new(); // (输出文件名, zip 内路径)
     for (i, idref) in opf_data.spine.iter().enumerate() {
         let Some(href) = opf_data.manifest.get(idref) else {
             continue;
@@ -190,7 +224,26 @@ pub fn parse_epub(bytes: &[u8]) -> Result<Vec<Chapter>, String> {
         let Some(xhtml) = read_zip_text(&mut zip, &path) else {
             continue;
         };
-        let (paragraphs, doc_title) = xhtml_to_paragraphs(&xhtml);
+        let doc_dir = parent_dir(&path);
+        let (paragraphs, doc_title) = {
+            let mut register = |src: &str, _alt: &str| -> Option<String> {
+                let src = src.trim();
+                if src.is_empty() || src.starts_with("data:") {
+                    return None;
+                }
+                let zip_path = resolve_href(&doc_dir, src);
+                if let Some(name) = img_names.get(&zip_path) {
+                    return Some(name.clone());
+                }
+                img_seq += 1;
+                let base = zip_path.rsplit('/').next().unwrap_or("image");
+                let name = format!("img_{}_{}", img_seq, sanitize_file_name(base));
+                img_names.insert(zip_path.clone(), name.clone());
+                img_pending.push((name.clone(), zip_path));
+                Some(name)
+            };
+            xhtml_to_paragraphs(&xhtml, &mut register)
+        };
         if paragraphs.is_empty() {
             continue;
         }
@@ -200,12 +253,56 @@ pub fn parse_epub(bytes: &[u8]) -> Result<Vec<Chapter>, String> {
             .or_else(|| lookup_by_basename(&toc, &path))
             .or(doc_title)
             .unwrap_or_else(|| format!("第 {} 部分", i + 1));
+        let group_title = hier.get(&path).cloned().unwrap_or_else(|| title.clone());
         chapters.push(Chapter { title, paragraphs });
+        group_titles.push(group_title);
     }
     if chapters.is_empty() {
         return Err("EPUB 中没有可读的正文内容".to_string());
     }
-    Ok(chapters)
+    let mut images = Vec::new();
+    for (name, zip_path) in img_pending {
+        if let Some(bytes) = read_zip_bytes(&mut zip, &zip_path) {
+            images.push((name, bytes));
+        }
+    }
+    Ok(ParsedBook {
+        chapters,
+        group_titles,
+        images,
+    })
+}
+
+/// 图片落盘的安全文件名：只留字母数字和 . _ -，最长 60 字符。
+fn sanitize_file_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(60)
+        .collect();
+    if cleaned.is_empty() {
+        "image".to_string()
+    } else {
+        cleaned
+    }
+}
+
+fn read_zip_bytes<R: Read + Seek>(zip: &mut ZipArchive<R>, name: &str) -> Option<Vec<u8>> {
+    for candidate in zip_name_candidates(name) {
+        if let Ok(mut file) = zip.by_name(&candidate) {
+            let mut buf = Vec::new();
+            if file.read_to_end(&mut buf).is_ok() && !buf.is_empty() {
+                return Some(buf);
+            }
+        }
+    }
+    None
 }
 
 fn read_zip_text<R: Read + Seek>(zip: &mut ZipArchive<R>, name: &str) -> Option<String> {
@@ -356,34 +453,68 @@ fn collect_manifest_item(e: &quick_xml::events::BytesStart<'_>, data: &mut OpfDa
     }
 }
 
-fn parse_ncx(xml: &str, opf_dir: &str, toc: &mut HashMap<String, String>) {
+/// 记录一个目录条目：扁平标题表 + 大节（顶层条目）映射；同一路径只取首次出现。
+/// `stack` 为当前打开的标签链（栈底是顶层条目）。
+fn record_nav_entry(
+    stack: &[String],
+    opf_dir: &str,
+    src: &str,
+    toc: &mut HashMap<String, String>,
+    hier: &mut HashMap<String, String>,
+) {
+    let Some(label) = stack.last().filter(|s| !s.is_empty()).cloned() else {
+        return;
+    };
+    let path = resolve_href(opf_dir, src);
+    toc.entry(path.clone()).or_insert(label.clone());
+    let root = if stack.len() > 1 {
+        stack
+            .first()
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .unwrap_or(label)
+    } else {
+        label
+    };
+    hier.entry(path).or_insert(root);
+}
+
+fn parse_ncx(
+    xml: &str,
+    opf_dir: &str,
+    toc: &mut HashMap<String, String>,
+    hier: &mut HashMap<String, String>,
+) {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
-    let mut current_label: Option<String> = None;
+    // 打开的 navPoint 标签栈（嵌套即目录层级）
+    let mut stack: Vec<String> = Vec::new();
     let mut in_label_text = false;
     loop {
         let event = reader.read_event_into(&mut buf);
         match event {
-            Ok(Event::Start(e)) => {
-                if local_name(e.name().as_ref()) == b"text" {
-                    in_label_text = true;
+            Ok(Event::Start(e)) => match local_name(e.name().as_ref()) {
+                b"navPoint" => stack.push(String::new()),
+                b"text" => in_label_text = true,
+                b"content" => {
+                    for attr in e.attributes().flatten() {
+                        if local_name(attr.key.as_ref()) == b"src" {
+                            if let Ok(v) = attr.unescape_value() {
+                                record_nav_entry(&stack, opf_dir, &v, toc, hier);
+                            }
+                        }
+                    }
                 }
-            }
+                _ => {}
+            },
             Ok(Event::Empty(e)) => {
-                // <content src="..."/> 是自闭合标签
+                // <content src="..."/> 常见于自闭合形式
                 if local_name(e.name().as_ref()) == b"content" {
                     for attr in e.attributes().flatten() {
                         if local_name(attr.key.as_ref()) == b"src" {
                             if let Ok(v) = attr.unescape_value() {
-                                if let Some(label) = &current_label {
-                                    if !label.trim().is_empty() {
-                                        toc.insert(
-                                            resolve_href(opf_dir, &v),
-                                            label.trim().to_string(),
-                                        );
-                                    }
-                                }
+                                record_nav_entry(&stack, opf_dir, &v, toc, hier);
                             }
                         }
                     }
@@ -391,15 +522,21 @@ fn parse_ncx(xml: &str, opf_dir: &str, toc: &mut HashMap<String, String>) {
             }
             Ok(Event::Text(t)) => {
                 if in_label_text {
-                    current_label = t.unescape().ok().map(|v| v.into_owned());
+                    if let Some(top) = stack.last_mut() {
+                        if top.is_empty() {
+                            *top = t.unescape().unwrap_or_default().trim().to_string();
+                        }
+                    }
                     in_label_text = false;
                 }
             }
-            Ok(Event::End(e)) => {
-                if local_name(e.name().as_ref()) == b"text" {
-                    in_label_text = false;
+            Ok(Event::End(e)) => match local_name(e.name().as_ref()) {
+                b"navPoint" => {
+                    stack.pop();
                 }
-            }
+                b"text" => in_label_text = false,
+                _ => {}
+            },
             Ok(Event::Eof) => break,
             Ok(_) => {}
             Err(_) => break,
@@ -408,35 +545,76 @@ fn parse_ncx(xml: &str, opf_dir: &str, toc: &mut HashMap<String, String>) {
     }
 }
 
-fn parse_nav(xml: &str, opf_dir: &str, toc: &mut HashMap<String, String>) {
+fn parse_nav(
+    xml: &str,
+    opf_dir: &str,
+    toc: &mut HashMap<String, String>,
+    hier: &mut HashMap<String, String>,
+) {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
+    // <li> 标签栈（目录 nav 中嵌套 <ol> 即层级）
+    let mut li_stack: Vec<String> = Vec::new();
     let mut pending_href: Option<String> = None;
+    // 只把 epub:type="toc" 的 nav 计入层级；扁平表保持原样全收
+    let mut in_toc_nav = false;
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => {
-                if local_name(e.name().as_ref()) == b"a" {
+            Ok(Event::Start(e)) => match local_name(e.name().as_ref()) {
+                b"nav" => {
+                    for attr in e.attributes().flatten() {
+                        if local_name(attr.key.as_ref()) == b"type" {
+                            if let Ok(v) = attr.unescape_value() {
+                                in_toc_nav = v.trim().eq_ignore_ascii_case("toc");
+                            }
+                        }
+                    }
+                }
+                b"li" => li_stack.push(String::new()),
+                b"a" => {
                     for attr in e.attributes().flatten() {
                         if local_name(attr.key.as_ref()) == b"href" {
                             pending_href = attr.unescape_value().ok().map(|v| v.into_owned());
                         }
                     }
                 }
-            }
+                _ => {}
+            },
             Ok(Event::Text(t)) => {
                 if let Some(href) = pending_href.take() {
-                    let title = t.unescape().unwrap_or_default();
-                    if !title.trim().is_empty() {
-                        toc.insert(resolve_href(opf_dir, &href), title.trim().to_string());
+                    let title = t.unescape().unwrap_or_default().trim().to_string();
+                    if !title.is_empty() {
+                        let path = resolve_href(opf_dir, &href);
+                        toc.entry(path.clone()).or_insert(title.clone());
+                        if in_toc_nav {
+                            if let Some(top) = li_stack.last_mut() {
+                                if top.is_empty() {
+                                    *top = title.clone();
+                                }
+                            }
+                            let root = if li_stack.len() > 1 {
+                                li_stack
+                                    .first()
+                                    .filter(|s| !s.is_empty())
+                                    .cloned()
+                                    .unwrap_or(title)
+                            } else {
+                                title
+                            };
+                            hier.entry(path).or_insert(root);
+                        }
                     }
                 }
             }
-            Ok(Event::End(e)) => {
-                if local_name(e.name().as_ref()) == b"a" {
-                    pending_href = None;
+            Ok(Event::End(e)) => match local_name(e.name().as_ref()) {
+                b"li" => {
+                    li_stack.pop();
                 }
-            }
+                b"a" => pending_href = None,
+                b"nav" => in_toc_nav = false,
+                _ => {}
+            },
             Ok(Event::Eof) => break,
             Ok(_) => {}
             Err(_) => break,
@@ -445,8 +623,12 @@ fn parse_nav(xml: &str, opf_dir: &str, toc: &mut HashMap<String, String>) {
     }
 }
 
-/// 把 XHTML 去标签成段落，同时顺带取 <title>。
-fn xhtml_to_paragraphs(html: &str) -> (Vec<String>, Option<String>) {
+/// 把 XHTML 去标签成段落，同时顺带取 <title>；遇到 <img> 经 register_img 登记
+/// （返回输出文件名）后在段间插入 `![alt](文件名)` 标记段，供前端原位还原插图。
+fn xhtml_to_paragraphs(
+    html: &str,
+    register_img: &mut dyn FnMut(&str, &str) -> Option<String>,
+) -> (Vec<String>, Option<String>) {
     let mut reader = Reader::from_str(html);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
@@ -456,6 +638,38 @@ fn xhtml_to_paragraphs(html: &str) -> (Vec<String>, Option<String>) {
     let mut capture_title = false;
     let mut skip_depth = 0i32;
     let mut in_head = false;
+
+    fn collect_img(
+        e: &quick_xml::events::BytesStart<'_>,
+        paragraphs: &mut Vec<String>,
+        current: &mut String,
+        register_img: &mut dyn FnMut(&str, &str) -> Option<String>,
+    ) {
+        let (mut src, mut alt) = (String::new(), String::new());
+        for attr in e.attributes().flatten() {
+            match local_name(attr.key.as_ref()) {
+                b"src" => {
+                    src = attr
+                        .unescape_value()
+                        .map(|v| v.into_owned())
+                        .unwrap_or_default()
+                }
+                b"alt" => {
+                    alt = attr
+                        .unescape_value()
+                        .map(|v| v.into_owned())
+                        .unwrap_or_default()
+                }
+                _ => {}
+            }
+        }
+        if let Some(name) = register_img(&src, &alt) {
+            flush_paragraph(paragraphs, current);
+            let alt = alt.replace(['[', ']'], "").replace('\n', " ");
+            paragraphs.push(format!("![{}]({name})", alt.trim()));
+        }
+    }
+
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => match local_name(e.name().as_ref()) {
@@ -463,11 +677,16 @@ fn xhtml_to_paragraphs(html: &str) -> (Vec<String>, Option<String>) {
                 b"head" => in_head = true,
                 b"title" => capture_title = true,
                 b"body" => in_head = false,
+                b"img" => collect_img(&e, &mut paragraphs, &mut current, register_img),
                 name if is_block_tag(name) => flush_paragraph(&mut paragraphs, &mut current),
                 _ => {}
             },
             Ok(Event::Empty(e)) => {
-                if is_block_tag(local_name(e.name().as_ref())) {
+                let qname = e.name();
+                let name = local_name(qname.as_ref());
+                if name == b"img" {
+                    collect_img(&e, &mut paragraphs, &mut current, register_img);
+                } else if is_block_tag(name) {
                     flush_paragraph(&mut paragraphs, &mut current);
                 }
             }
@@ -640,6 +859,25 @@ pub fn chunk_chapters(chapters: Vec<Chapter>) -> Vec<UnitDraft> {
     units
 }
 
+/// 把"每 spine 章的大节标题"展开成"每个学习单元的大节标题"：
+/// 用与导入完全相同的切分复算对齐单元顺序；数量对不上（源文件已变化）返回 None。
+pub fn unit_group_titles(parsed: &ParsedBook, unit_count: usize) -> Option<Vec<String>> {
+    if parsed.chapters.len() != parsed.group_titles.len() {
+        return None;
+    }
+    let mut out = Vec::new();
+    for (chapter, group_title) in parsed.chapters.iter().zip(parsed.group_titles.iter()) {
+        for _ in chunk_paragraphs(&chapter.paragraphs) {
+            out.push(group_title.clone());
+        }
+    }
+    if out.len() == unit_count {
+        Some(out)
+    } else {
+        None
+    }
+}
+
 /// 段落打包为 1500–3000 字的单元；末尾不足 700 字的块并入前一单元。
 pub fn chunk_paragraphs(paragraphs: &[String]) -> Vec<String> {
     let mut pieces: Vec<String> = Vec::new();
@@ -747,6 +985,92 @@ fn hard_chop(s: &str) -> Vec<String> {
     out
 }
 
+// ---------- 章节分组（阅读/领读以"章"为单位；元数据不入库，按标题推导） ----------
+
+/// 一章总字符数上限：超过则拆成连续分段，避免阅读页和 LLM 输入过大。
+pub const MAX_CHAPTER_CHARS: usize = 30000;
+
+/// 剥掉单元标题尾部的全角编号后缀（"章名（2）" → "章名"），无后缀则原样返回。
+pub fn chapter_group_title(unit_title: &str) -> &str {
+    let trimmed = unit_title.trim_end();
+    let Some(rest) = trimmed.strip_suffix('）') else {
+        return unit_title;
+    };
+    let Some(pos) = rest.rfind('（') else {
+        return unit_title;
+    };
+    let digits = &rest[pos + '（'.len_utf8()..];
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return unit_title;
+    }
+    let base = unit_title[..pos].trim_end();
+    if base.is_empty() {
+        unit_title
+    } else {
+        base
+    }
+}
+
+/// 一段连续阅读章节：聚合同名小节得到；`unit_ids` 按书内顺序排列。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChapterRun {
+    pub index: usize,
+    pub title: String,
+    pub unit_ids: Vec<i64>,
+}
+
+/// 按 idx 顺序把连续同大节标题的单元聚成一章；累计字符数达到 MAX_CHAPTER_CHARS
+/// 时强制另起一段（第 2 段标题追加"（续）"、第 3 段"（续 2）"……），
+/// txt/pdf 整书一章的场景由此兜底。输入为 (unit_id, idx, 大节标题, 内容字符数)，
+/// 大节标题由调用方给出（目录层级或 chapter_group_title 推导）。
+pub fn group_units_into_chapters(units: &[(i64, i64, String, usize)]) -> Vec<ChapterRun> {
+    let mut groups: Vec<ChapterRun> = Vec::new();
+    let mut last_base = String::new();
+    let mut current_len = 0usize;
+    // 当前 base 已拆出的段数（仅因超长拆分时递增）
+    let mut split_count = 0usize;
+    for (id, _idx, title, char_count) in units {
+        let base = title.as_str();
+        if !groups.is_empty() && last_base == base && current_len < MAX_CHAPTER_CHARS {
+            groups.last_mut().unwrap().unit_ids.push(*id);
+            current_len += char_count;
+            continue;
+        }
+        let run_title = if !groups.is_empty() && last_base == base {
+            split_count += 1;
+            if split_count == 1 {
+                format!("{base}（续）")
+            } else {
+                format!("{base}（续 {split_count}）")
+            }
+        } else {
+            split_count = 0;
+            base.to_string()
+        };
+        last_base = base.to_string();
+        current_len = *char_count;
+        groups.push(ChapterRun {
+            index: groups.len(),
+            title: run_title,
+            unit_ids: vec![*id],
+        });
+    }
+    groups
+}
+
+/// 喂给 LLM 的正文上限：超长时保留头 60% + 尾 40%，中间标注省略。
+pub fn cap_llm_input(text: &str, max_chars: usize) -> String {
+    let total = text.chars().count();
+    if total <= max_chars {
+        return text.to_string();
+    }
+    let head = max_chars * 3 / 5;
+    let tail = max_chars - head;
+    let head_s: String = text.chars().take(head).collect();
+    let tail_s: String = text.chars().skip(total - tail).collect();
+    format!("{head_s}\n……（中间内容略）……\n{tail_s}")
+}
+
 // ---------- 导入 ----------
 
 pub fn import_book(db: &Db, app_data_dir: &Path, path: &str) -> Result<BookSummary, String> {
@@ -780,8 +1104,8 @@ pub fn import_book(db: &Db, app_data_dir: &Path, path: &str) -> Result<BookSumma
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "未命名".to_string());
-    let chapters = parse_file(file_path)?;
-    let units = chunk_chapters(chapters);
+    let parsed = parse_file_grouped(file_path)?;
+    let units = chunk_chapters(parsed.chapters);
     if units.is_empty() {
         return Err("未能从该文件中解析出任何学习内容".to_string());
     }
@@ -791,7 +1115,7 @@ pub fn import_book(db: &Db, app_data_dir: &Path, path: &str) -> Result<BookSumma
         .insert_book(&title, path, format, &added_at)
         .map_err(|e| e.to_string())?;
     let book_dir = app_data_dir.join("books").join(book_id.to_string());
-    if let Err(e) = persist_units(db, book_id, &book_dir, &units) {
+    if let Err(e) = persist_units(db, book_id, &book_dir, &units, &parsed.images) {
         let _ = db.delete_book(book_id);
         let _ = std::fs::remove_dir_all(&book_dir);
         return Err(e);
@@ -812,8 +1136,17 @@ fn persist_units(
     book_id: i64,
     book_dir: &Path,
     units: &[UnitDraft],
+    images: &[(String, Vec<u8>)],
 ) -> Result<(), String> {
     std::fs::create_dir_all(book_dir).map_err(|e| format!("无法创建书籍目录：{e}"))?;
+    if !images.is_empty() {
+        let images_dir = book_dir.join("images");
+        std::fs::create_dir_all(&images_dir).map_err(|e| format!("无法创建图片目录：{e}"))?;
+        for (name, bytes) in images {
+            std::fs::write(images_dir.join(name), bytes)
+                .map_err(|e| format!("无法写入图片 {name}：{e}"))?;
+        }
+    }
     for (idx, unit) in units.iter().enumerate() {
         let file = book_dir.join(format!("unit_{idx}.txt"));
         std::fs::write(&file, &unit.text).map_err(|e| format!("无法写入单元文件：{e}"))?;
@@ -1058,6 +1391,71 @@ mod tests {
     }
 
     #[test]
+    fn parse_epub_extracts_images_as_marker_paragraphs() {
+        use std::io::Write;
+        let png = b"\x89PNG-fake".to_vec();
+        let page = |body: &str| {
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>页</title></head><body>{body}</body></html>"#
+            )
+        };
+        // 图片相对 spine 文档所在目录解析（OEBPS/text/ → ../figs/）
+        let page1 = page("<p>图片前的一段。</p><img src=\"../figs/f1.png\" alt=\"图1 流程\"/><p>图后的一段。</p>");
+        let page2 = page("<p>第二章正文。</p><img src=\"../figs/f1.png\"/>");
+        let files: Vec<(&str, Vec<u8>)> = vec![
+            ("META-INF/container.xml", CONTAINER_XML.as_bytes().to_vec()),
+            ("OEBPS/content.opf", OPF_WITH_NCX.as_bytes().to_vec()),
+            ("OEBPS/toc.ncx", NCX.as_bytes().to_vec()),
+            ("OEBPS/text/a1.xhtml", page1.into_bytes()),
+            ("OEBPS/text/a2.xhtml", page2.into_bytes()),
+            ("OEBPS/figs/f1.png", png.clone()),
+        ];
+        let mut cur = Cursor::new(Vec::new());
+        {
+            let mut w = zip::write::ZipWriter::new(&mut cur);
+            let opt = zip::write::SimpleFileOptions::default();
+            for (n, c) in &files {
+                w.start_file(*n, opt).unwrap();
+                w.write_all(c).unwrap();
+            }
+            w.finish().unwrap();
+        }
+        let buf = cur.into_inner();
+
+        let parsed = parse_epub_grouped(&buf).unwrap();
+        // 同一图片两处引用只抽取一份，正文原位留下标记段
+        assert_eq!(parsed.images.len(), 1);
+        assert_eq!(parsed.images[0].1, png);
+        let name = &parsed.images[0].0;
+        assert!(name.ends_with("_f1.png"), "输出文件名应保留原文件名：{name}");
+        let p1 = &parsed.chapters[0].paragraphs;
+        assert!(
+            p1.iter().any(|p| p == &format!("![图1 流程]({name})")),
+            "{p1:?}"
+        );
+        assert!(!p1.iter().any(|p| p.contains("figs/")), "zip 内路径不应出现在正文：{p1:?}");
+        assert!(parsed.chapters[1].paragraphs.iter().any(|p| p == &format!("![]({name})")));
+
+        // 导入后图片写入 books/<id>/images/，单元文本保留标记
+        let dir = temp_dir("img-import");
+        let db = Db::open_in_memory().unwrap();
+        let epub_path = dir.join("img-book.epub");
+        std::fs::write(&epub_path, &buf).unwrap();
+        let summary = import_book(&db, &dir, epub_path.to_string_lossy().as_ref()).unwrap();
+        let images_dir = dir.join("books").join(summary.id.to_string()).join("images");
+        assert!(images_dir.join(name).exists());
+        let unit_text = std::fs::read_to_string(
+            dir.join("books")
+                .join(summary.id.to_string())
+                .join("unit_0.txt"),
+        )
+        .unwrap();
+        assert!(unit_text.contains(&format!("]({name})")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn parse_minimal_epub_with_ncx_titles() {
         let bytes = write_zip(&[
             ("META-INF/container.xml", CONTAINER_XML),
@@ -1099,6 +1497,148 @@ mod tests {
         assert_eq!(chapters.len(), 1);
         assert_eq!(chapters[0].title, "甲卷");
         assert!(chapters[0].paragraphs[0].contains("甲卷的内容"));
+    }
+
+    const OPF_WITH_NCX_4: &str = r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uid">
+  <metadata><dc:title>层级书</dc:title></metadata>
+  <manifest>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="c1" href="text/ch1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c2" href="text/s1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c3" href="text/s2.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c4" href="text/s3.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="c1"/>
+    <itemref idref="c2"/>
+    <itemref idref="c3"/>
+    <itemref idref="c4"/>
+  </spine>
+</package>"#;
+
+    const NCX_NESTED: &str = r#"<?xml version="1.0"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <docTitle><text>层级书</text></docTitle>
+  <navMap>
+    <navPoint id="n1"><navLabel><text>第1章 基础</text></navLabel><content src="text/ch1.xhtml"/>
+      <navPoint id="n2"><navLabel><text>1.1 感知机</text></navLabel><content src="text/s1.xhtml"/></navPoint>
+      <navPoint id="n3"><navLabel><text>1.2 回归</text></navLabel><content src="text/s2.xhtml"/></navPoint>
+    </navPoint>
+    <navPoint id="n4"><navLabel><text>第2章 硬件</text></navLabel><content src="text/s3.xhtml"/></navPoint>
+  </navMap>
+</ncx>"#;
+
+    #[test]
+    fn parse_epub_nested_ncx_maps_sections_to_chapter() {
+        let bytes = write_zip(&[
+            ("META-INF/container.xml", CONTAINER_XML),
+            ("OEBPS/content.opf", OPF_WITH_NCX_4),
+            ("OEBPS/toc.ncx", NCX_NESTED),
+            ("OEBPS/text/ch1.xhtml", &xhtml("封面", &["第1章引言。"])),
+            ("OEBPS/text/s1.xhtml", &xhtml("感知机", &["感知机内容。"])),
+            ("OEBPS/text/s2.xhtml", &xhtml("回归", &["回归内容。"])),
+            ("OEBPS/text/s3.xhtml", &xhtml("硬件", &["硬件内容。"])),
+        ]);
+        let parsed = parse_epub_grouped(&bytes).unwrap();
+        // 扁平标题仍是各节目录名
+        assert_eq!(parsed.chapters[1].title, "1.1 感知机");
+        assert_eq!(parsed.chapters[2].title, "1.2 回归");
+        // 大节归属：前三节同属"第1章 基础"，末节自成一章
+        assert_eq!(
+            parsed.group_titles,
+            vec![
+                "第1章 基础".to_string(),
+                "第1章 基础".to_string(),
+                "第1章 基础".to_string(),
+                "第2章 硬件".to_string(),
+            ]
+        );
+    }
+
+    const OPF_WITH_NAV: &str = r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
+  <metadata><dc:title>层级书</dc:title></metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="c1" href="text/ch1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c2" href="text/s1.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="c1"/>
+    <itemref idref="c2"/>
+  </spine>
+</package>"#;
+
+    const NAV_NESTED: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<body>
+<nav epub:type="toc"><ol>
+  <li><a href="text/ch1.xhtml">第1章 基础</a><ol>
+    <li><a href="text/s1.xhtml">1.1 感知机</a></li>
+  </ol></li>
+</ol></nav>
+<nav epub:type="page-list"><ol>
+  <li><a href="text/ch1.xhtml">1</a></li>
+</ol></nav>
+</body>
+</html>"#;
+
+    #[test]
+    fn parse_epub_nested_nav_uses_only_toc_nav_for_hierarchy() {
+        let bytes = write_zip(&[
+            ("META-INF/container.xml", CONTAINER_XML),
+            ("OEBPS/content.opf", OPF_WITH_NAV),
+            ("OEBPS/nav.xhtml", NAV_NESTED),
+            ("OEBPS/text/ch1.xhtml", &xhtml("封面", &["第1章引言。"])),
+            ("OEBPS/text/s1.xhtml", &xhtml("感知机", &["感知机内容。"])),
+        ]);
+        let parsed = parse_epub_grouped(&bytes).unwrap();
+        assert_eq!(
+            parsed.group_titles,
+            vec!["第1章 基础".to_string(), "第1章 基础".to_string()]
+        );
+    }
+
+    #[test]
+    fn unit_group_titles_align_with_chunking() {
+        // 一章被切成两个单元时，两单元共享同一大节标题
+        let long_para = "字".repeat(1600);
+        let another = "段".repeat(1600);
+        let parsed = ParsedBook {
+            chapters: vec![
+                Chapter {
+                    title: "第1章".to_string(),
+                    paragraphs: vec![long_para, another],
+                },
+                Chapter {
+                    title: "第2章".to_string(),
+                    paragraphs: vec!["短内容。".to_string()],
+                },
+            ],
+            group_titles: vec!["第1章".to_string(), "第2章".to_string()],
+            images: Vec::new(),
+        };
+        let titles = unit_group_titles(&parsed, 3).unwrap();
+        assert_eq!(titles, vec!["第1章", "第1章", "第2章"]);
+        // 单元数对不上（源文件变了）→ None，调用方回退
+        assert!(unit_group_titles(&parsed, 2).is_none());
+        assert!(unit_group_titles(&parsed, 4).is_none());
+    }
+
+    #[test]
+    fn parse_file_grouped_markdown_is_flat() {
+        let text = std::fs::read_to_string(fixture_path()).unwrap();
+        let dir = temp_dir("mdgroup");
+        let path = dir.join("book.md");
+        std::fs::write(&path, text).unwrap();
+        let parsed = parse_file_grouped(&path).unwrap();
+        assert_eq!(parsed.chapters.len(), 3);
+        assert_eq!(parsed.group_titles.len(), 3);
+        for (ch, gt) in parsed.chapters.iter().zip(parsed.group_titles.iter()) {
+            assert_eq!(&ch.title, gt);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1144,5 +1684,85 @@ mod tests {
         assert!(err.contains("文件不存在"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn chapter_group_title_strips_numeric_suffix() {
+        assert_eq!(chapter_group_title("长章（1）"), "长章");
+        assert_eq!(chapter_group_title("长章（12）"), "长章");
+        assert_eq!(chapter_group_title("长章"), "长章");
+        // 非数字括号、半角括号、剥后会变空的都不处理
+        assert_eq!(chapter_group_title("物种（修订版）"), "物种（修订版）");
+        assert_eq!(chapter_group_title("章名(1)"), "章名(1)");
+        assert_eq!(chapter_group_title("（1）"), "（1）");
+        assert_eq!(chapter_group_title("长章（3） "), "长章");
+    }
+
+    #[test]
+    fn group_units_consecutive_same_chapter() {
+        let units = vec![
+            (1, 0, "甲".to_string(), 2000),
+            (2, 1, "甲".to_string(), 2000),
+            (3, 2, "乙".to_string(), 1000),
+            (4, 3, "丙（1）".to_string(), 500),
+        ];
+        let groups = group_units_into_chapters(&units);
+        assert_eq!(groups.len(), 3);
+        assert_eq!(
+            groups[0],
+            ChapterRun {
+                index: 0,
+                title: "甲".to_string(),
+                unit_ids: vec![1, 2]
+            }
+        );
+        assert_eq!(groups[1].unit_ids, vec![3]);
+        assert_eq!(groups[2].title, "丙（1）");
+        assert_eq!(groups[2].unit_ids, vec![4]);
+
+        // 空输入与单节书
+        assert!(group_units_into_chapters(&[]).is_empty());
+        let single = group_units_into_chapters(&[(7, 0, "正文".to_string(), 800)]);
+        assert_eq!(single.len(), 1);
+        assert_eq!(single[0].unit_ids, vec![7]);
+    }
+
+    #[test]
+    fn group_units_splits_oversized_chapter() {
+        let units: Vec<(i64, i64, String, usize)> = (0..10)
+            .map(|i| (i as i64, i as i64, "正文".to_string(), 10000))
+            .collect();
+        let groups = group_units_into_chapters(&units);
+        assert_eq!(groups.len(), 4);
+        assert_eq!(groups[0].title, "正文");
+        assert_eq!(groups[0].unit_ids, vec![0, 1, 2]);
+        assert_eq!(groups[1].title, "正文（续）");
+        assert_eq!(groups[2].title, "正文（续 2）");
+        assert_eq!(groups[3].title, "正文（续 3）");
+        assert_eq!(groups[3].unit_ids, vec![9]);
+        // 换章后拆段计数复位
+        let mut tail = units.clone();
+        tail.push((10, 10, "新章".to_string(), 100));
+        let groups = group_units_into_chapters(&tail);
+        assert_eq!(groups.last().unwrap().title, "新章");
+    }
+
+    #[test]
+    fn cap_llm_input_truncates_middle() {
+        let short = "短文不超上限";
+        assert_eq!(cap_llm_input(short, 100), short);
+
+        let head = "头".repeat(6000);
+        let mid = "中".repeat(10000);
+        let tail = "尾".repeat(4000);
+        let text = format!("{head}{mid}{tail}");
+        let capped = cap_llm_input(&text, 10000);
+        assert!(capped.contains("（中间内容略）"));
+        assert_eq!(capped.chars().filter(|c| *c == '头').count(), 6000);
+        assert_eq!(capped.chars().filter(|c| *c == '尾').count(), 4000);
+        // 头尾恰好衔接中间段之外的内容：不夹带被略去的中间正文
+        let (front, back) = capped.split_once("（中间内容略）").unwrap();
+        assert!(front.trim_end_matches(['…', '\n']).ends_with("头"));
+        assert!(back.trim_start_matches(['…', '\n']).starts_with("尾"));
     }
 }

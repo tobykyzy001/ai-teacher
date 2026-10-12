@@ -59,6 +59,8 @@ pub struct LlmSettings {
     pub base_url: String,
     pub api_key: String,
     pub model: String,
+    /// 打开全新章节时是否自动开始 AI 领读；默认关闭（手动点"开始领读"才生成）
+    pub auto_start_reading: bool,
 }
 
 impl Default for LlmSettings {
@@ -67,6 +69,7 @@ impl Default for LlmSettings {
             base_url: "https://api.deepseek.com".to_string(),
             api_key: String::new(),
             model: "deepseek-chat".to_string(),
+            auto_start_reading: false,
         }
     }
 }
@@ -165,6 +168,38 @@ pub struct ReviewTask {
 pub struct BookDetail {
     pub book: BookSummary,
     pub units: Vec<Unit>,
+    /// 按章分组的单元视图（与 units 同一数据源，分组规则见 ingest::group_units_into_chapters）
+    pub chapters: Vec<ChapterGroup>,
+}
+
+/// 书详情页的一章：章内单元按书内顺序排列。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChapterGroup {
+    pub title: String,
+    pub first_unit_id: i64,
+    pub units: Vec<Unit>,
+}
+
+/// 阅读页一章的内容：整章连续展示 + 章间翻页。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChapterContent {
+    pub book_title: String,
+    pub chapter_title: String,
+    pub chapter_number: i64, // 从 1 开始
+    pub chapter_count: i64,
+    pub prev_chapter_unit_id: Option<i64>, // 上一章首节的 unit_id，无则 None
+    pub next_chapter_unit_id: Option<i64>,
+    pub segments: Vec<ChapterSegment>,
+    /// 已保存的章领读讲解（生成过才有；重开页面直接展示，不重新生成）
+    pub saved_session: Option<ReadingSession>,
+    /// 该书图片目录的绝对路径（books/<id>/images）；没有插图的书为 None
+    pub images_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChapterSegment {
+    pub unit: Unit,
+    pub content: String,
 }
 
 /// 错题条目：绝不包含 answer / explanation 字段。

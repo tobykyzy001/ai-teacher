@@ -75,19 +75,22 @@ mod tests {
                 base_url: "https://api.example.com".to_string(),
                 api_key: "sk-test".to_string(),
                 model: "my-model".to_string(),
+                auto_start_reading: true,
             })
             .unwrap();
         let s = store.load();
         assert_eq!(s.base_url, "https://api.example.com");
         assert_eq!(s.api_key, "sk-test");
         assert_eq!(s.model, "my-model");
+        assert!(s.auto_start_reading);
 
-        // 缺字段的配置文件按默认值补全
+        // 缺字段的配置文件按默认值补全（含新加的 auto_start_reading=false）
         std::fs::write(dir.join("config.json"), r#"{"model":"m2"}"#).unwrap();
         let s = store.load();
         assert_eq!(s.model, "m2");
         assert_eq!(s.base_url, "https://api.deepseek.com");
         assert_eq!(s.api_key, "");
+        assert!(!s.auto_start_reading);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

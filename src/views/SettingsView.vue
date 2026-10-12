@@ -51,6 +51,29 @@
         </n-alert>
       </n-spin>
     </n-card>
+
+    <n-card title="阅读行为" class="about-card">
+      <div class="switch-row">
+        <n-switch v-model:value="form.auto_start_reading" :disabled="loading" />
+        <div>
+          <div>打开新章节时自动开始 AI 领读</div>
+          <div class="muted small">
+            默认关闭：进入章节不调用 AI，手动点"开始领读"才生成讲解；开启后会对每个全新章节自动领读（消耗 token）。无论开关，已生成过的讲解都会直接展示、不重复生成。
+          </div>
+        </div>
+      </div>
+      <n-button type="primary" class="save-behavior" :loading="saving" :disabled="loading" @click="onSave">
+        保存
+      </n-button>
+    </n-card>
+
+    <n-card title="关于" class="about-card">
+      <div class="muted small">AI 老师 v{{ BUILD_VERSION }}</div>
+      <div class="muted small">构建 {{ BUILD_HASH }} · {{ BUILD_TIME }}</div>
+      <div class="muted small">
+        用构建信息对照最新代码是否已生效；学习数据保存在本机应用数据目录，覆盖安装或升级不会丢失进度。
+      </div>
+    </n-card>
   </div>
 </template>
 
@@ -65,14 +88,21 @@ import {
   NInput,
   NSpace,
   NSpin,
+  NSwitch,
   useMessage,
 } from "naive-ui";
 import { api, type ConnectionTestResult, type LlmSettings } from "../api";
+import { BUILD_HASH, BUILD_TIME, BUILD_VERSION } from "../build-info";
 import { errText } from "../utils";
 
 const message = useMessage();
 
-const form = reactive<LlmSettings>({ base_url: "", api_key: "", model: "" });
+const form = reactive<LlmSettings>({
+  base_url: "",
+  api_key: "",
+  model: "",
+  auto_start_reading: false,
+});
 const loading = ref(true);
 const loadError = ref<string | null>(null);
 const saving = ref(false);
@@ -130,5 +160,23 @@ async function onTest(): Promise<void> {
 
 .test-result {
   margin-top: 16px;
+}
+
+.about-card {
+  margin-top: 16px;
+}
+
+.about-card .small {
+  line-height: 1.9;
+}
+
+.switch-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.save-behavior {
+  margin-top: 12px;
 }
 </style>

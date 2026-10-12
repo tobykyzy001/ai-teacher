@@ -79,46 +79,12 @@ pub async fn start_reading_impl(
     let prev_ctx = prev_context(db, &unit);
     let explanation =
         llm::explain_stream(settings, &content, prev_ctx.as_deref(), on_explain).await?;
-    let knowledge_points = llm::knowledge_points(settings, &content).await?;
 
-    // 首次学习本单元时生成摘要（尽力而为，失败不影响阅读）
-    if db
-        .get_unit_summary(unit_id)
-        .map_err(|e| e.to_string())?
-        .is_none()
-    {
-        match llm::summarize(settings, &content).await {
-            Ok(summary) => {
-                let updated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                if let Err(e) = db.upsert_unit_summary(unit_id, &summary, &updated_at) {
-                    eprintln!("保存单元摘要失败：{e}");
-                }
-            }
-            Err(e) => eprintln!("生成单元摘要失败（忽略）：{e}"),
-        }
-    }
-
-    if unit.status != UnitStatus::Done.as_str() {
-        db.update_unit_progress(unit_id, UnitStatus::Reading.as_str(), unit.mastery)
-            .map_err(|e| e.to_string())?;
-    }
-    // 幂等：已有复习项（学过或做错过）就不再生成
-    if !db.has_review_items(unit_id).map_err(|e| e.to_string())? {
-        let due = scheduler::due_date(today(), 1);
-        for kp in &knowledge_points {
-            db.insert_review_item(
-                unit_id,
-                kp,
-                None,
-                scheduler::INITIAL_EASE,
-                1,
-                0,
-                &due,
-                "study",
-            )
-            .map_err(|e| e.to_string())?;
-        }
-    }
+    ensure_unit_registered(db, settings, &unit, &content).await?;
+    // 知识点取已入库的（与复习项一致）；首次学习时即 ensure_unit_registered 提取的
+    let knowledge_points = db
+        .knowledge_points_of_unit(unit_id)
+        .map_err(|e| e.to_string())?;
     Ok(ReadingSession {
         explanation,
         knowledge_points,
@@ -158,6 +124,273 @@ pub async fn ask_selection_impl(
     llm::ask_selection_stream(
         settings,
         &content,
+        prev_ctx.as_deref(),
+        quote,
+        question,
+        on_delta,
+    )
+    .await
+}
+
+// ---------- 章节级阅读（章为阅读/领读单位，单元仍是做题/复习单位） ----------
+
+/// 章正文喂给 LLM 的字符上限；超出部分由 cap_llm_input 取头尾拼接。
+const MAX_CHAPTER_LLM_CHARS: usize = 15000;
+
+/// 每个单元所属"大节"标题：优先按源文件目录层级重解析（不入库，EPUB 取 NCX/nav 顶层
+/// 条目）；源文件缺失、解析失败或单元数对不上时，回退按单元标题推导（去"（N）"后缀）。
+fn book_unit_group_titles(db: &Db, book_id: i64, rows: &[UnitRow]) -> Vec<String> {
+    let fallback = || -> Vec<String> {
+        rows.iter()
+            .map(|r| ingest::chapter_group_title(&r.title).to_string())
+            .collect()
+    };
+    let source_path = match db.get_book_source_path(book_id) {
+        Ok(Some(p)) => p,
+        _ => return fallback(),
+    };
+    let source = Path::new(&source_path);
+    if !source.exists() {
+        return fallback();
+    }
+    let parsed = match ingest::parse_file_grouped(source) {
+        Ok(p) => p,
+        Err(_) => return fallback(),
+    };
+    ingest::unit_group_titles(&parsed, rows.len()).unwrap_or_else(fallback)
+}
+
+/// 分组输入 (id, idx, 大节标题, 内容字符数)；读不到内容的单元按 0 字计。
+fn measure_book_units(db: &Db, book_id: i64, rows: &[UnitRow]) -> Vec<(i64, i64, String, usize)> {
+    let titles = book_unit_group_titles(db, book_id, rows);
+    rows.iter()
+        .zip(titles)
+        .map(|(r, group_title)| {
+            let n = read_unit_content(r).map(|c| c.chars().count()).unwrap_or(0);
+            (r.id, r.idx, group_title, n)
+        })
+        .collect()
+}
+
+struct ChapterScope {
+    book_title: String,
+    chapter_title: String,
+    chapter_number: usize,
+    chapter_count: usize,
+    prev_chapter_unit_id: Option<i64>,
+    next_chapter_unit_id: Option<i64>,
+    units: Vec<(UnitRow, String)>,
+    images_dir: Option<String>,
+}
+
+/// 定位 unit_id 所在章：全书单元按标题推导分组（超长章自动拆段，见 ingest）。
+fn resolve_chapter(db: &Db, unit_id: i64) -> Result<ChapterScope, String> {
+    let (unit, book_title) = db
+        .get_unit_with_book_title(unit_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("未找到该单元")?;
+    let rows = db.list_unit_rows(unit.book_id).map_err(|e| e.to_string())?;
+    let measured = measure_book_units(db, unit.book_id, &rows);
+    let groups = ingest::group_units_into_chapters(&measured);
+    let pos = groups
+        .iter()
+        .position(|g| g.unit_ids.contains(&unit_id))
+        .ok_or("未找到该单元所属章节")?;
+    let group = &groups[pos];
+    let mut units = Vec::with_capacity(group.unit_ids.len());
+    for uid in &group.unit_ids {
+        let row = rows.iter().find(|r| r.id == *uid).ok_or("章节数据异常")?;
+        let content = read_unit_content(row)?;
+        units.push((row.clone(), content));
+    }
+    // 图片目录：单元文件在 books/<id>/ 下，插图在 images/ 子目录（不存在即无插图）
+    let images_dir = units
+        .first()
+        .and_then(|(row, _)| Path::new(&row.content_path).parent().map(|p| p.to_path_buf()))
+        .map(|p| p.join("images"))
+        .filter(|p| p.is_dir())
+        .map(|p| p.to_string_lossy().to_string());
+    Ok(ChapterScope {
+        book_title,
+        chapter_title: group.title.clone(),
+        chapter_number: pos + 1,
+        chapter_count: groups.len(),
+        prev_chapter_unit_id: pos
+            .checked_sub(1)
+            .and_then(|p| groups[p].unit_ids.first().copied()),
+        next_chapter_unit_id: groups
+            .get(pos + 1)
+            .and_then(|g| g.unit_ids.first().copied()),
+        units,
+        images_dir,
+    })
+}
+
+fn chapter_plain_text(scope: &ChapterScope) -> String {
+    scope
+        .units
+        .iter()
+        .map(|(_, c)| c.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+pub fn get_chapter_content_impl(db: &Db, unit_id: i64) -> Result<ChapterContent, String> {
+    let scope = resolve_chapter(db, unit_id)?;
+    let first_unit_id = scope.units[0].0.id;
+    let saved_session = db
+        .get_chapter_explanation(first_unit_id)
+        .ok()
+        .flatten()
+        .map(|(explanation, knowledge_points)| ReadingSession {
+            explanation,
+            knowledge_points,
+        });
+    Ok(ChapterContent {
+        book_title: scope.book_title,
+        chapter_title: scope.chapter_title,
+        chapter_number: scope.chapter_number as i64,
+        chapter_count: scope.chapter_count as i64,
+        prev_chapter_unit_id: scope.prev_chapter_unit_id,
+        next_chapter_unit_id: scope.next_chapter_unit_id,
+        segments: scope
+            .units
+            .iter()
+            .map(|(row, content)| ChapterSegment {
+                unit: row_to_unit(row),
+                content: content.clone(),
+            })
+            .collect(),
+        saved_session,
+        images_dir: scope.images_dir,
+    })
+}
+
+/// 单元首次学习的幂等登记（章领读与单元领读共用）：状态→reading（done 不动）、
+/// 无复习项才提取知识点建复习项（明天到期）、无摘要才生成摘要。
+async fn ensure_unit_registered(
+    db: &Db,
+    settings: &LlmSettings,
+    unit: &UnitRow,
+    content: &str,
+) -> Result<(), String> {
+    if unit.status != UnitStatus::Done.as_str() {
+        db.update_unit_progress(unit.id, UnitStatus::Reading.as_str(), unit.mastery)
+            .map_err(|e| e.to_string())?;
+    }
+    if !db.has_review_items(unit.id).map_err(|e| e.to_string())? {
+        let knowledge_points = llm::knowledge_points(settings, content).await?;
+        let due = scheduler::due_date(today(), 1);
+        for kp in &knowledge_points {
+            db.insert_review_item(
+                unit.id,
+                kp,
+                None,
+                scheduler::INITIAL_EASE,
+                1,
+                0,
+                &due,
+                "study",
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    if db
+        .get_unit_summary(unit.id)
+        .map_err(|e| e.to_string())?
+        .is_none()
+    {
+        match llm::summarize(settings, content).await {
+            Ok(summary) => {
+                let updated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                if let Err(e) = db.upsert_unit_summary(unit.id, &summary, &updated_at) {
+                    eprintln!("保存单元摘要失败：{e}");
+                }
+            }
+            Err(e) => eprintln!("生成单元摘要失败（忽略）：{e}"),
+        }
+    }
+    Ok(())
+}
+
+pub async fn start_chapter_reading_impl(
+    db: &Db,
+    settings: &LlmSettings,
+    unit_id: i64,
+    on_explain: &mut (dyn FnMut(&str) + Send),
+) -> Result<ReadingSession, String> {
+    let scope = resolve_chapter(db, unit_id)?;
+    let chapter_text = ingest::cap_llm_input(&chapter_plain_text(&scope), MAX_CHAPTER_LLM_CHARS);
+    let prev_ctx = prev_context(db, &scope.units[0].0);
+    let explanation = llm::explain_chapter_stream(
+        settings,
+        &scope.chapter_title,
+        &chapter_text,
+        prev_ctx.as_deref(),
+        on_explain,
+    )
+    .await?;
+
+    // 章内每个小节幂等登记；单小节失败不拖垮整章领读
+    for (unit, content) in &scope.units {
+        if let Err(e) = ensure_unit_registered(db, settings, unit, content).await {
+            eprintln!("小节「{}」登记失败（忽略）：{e}", unit.title);
+        }
+    }
+    // 展示用知识点 = 各小节已入库知识点的有序去重并集
+    let mut all_kps: Vec<String> = Vec::new();
+    for (unit, _) in &scope.units {
+        match db.knowledge_points_of_unit(unit.id) {
+            Ok(kps) => {
+                for kp in kps {
+                    if !all_kps.contains(&kp) {
+                        all_kps.push(kp);
+                    }
+                }
+            }
+            Err(e) => eprintln!("读取小节知识点失败：{e}"),
+        }
+    }
+    // 讲解本地持久化：重开页面直接展示，"重新领读"时覆盖
+    let updated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let first_unit_id = scope.units[0].0.id;
+    if let Err(e) = db.upsert_chapter_explanation(first_unit_id, &explanation, &all_kps, &updated_at)
+    {
+        eprintln!("保存章节领读讲解失败：{e}");
+    }
+    Ok(ReadingSession {
+        explanation,
+        knowledge_points: all_kps,
+    })
+}
+
+pub async fn ask_chapter_impl(
+    db: &Db,
+    settings: &LlmSettings,
+    unit_id: i64,
+    question: &str,
+    on_delta: &mut (dyn FnMut(&str) + Send),
+) -> Result<String, String> {
+    let scope = resolve_chapter(db, unit_id)?;
+    let chapter_text = ingest::cap_llm_input(&chapter_plain_text(&scope), MAX_CHAPTER_LLM_CHARS);
+    let prev_ctx = prev_context(db, &scope.units[0].0);
+    llm::ask_stream(settings, &chapter_text, prev_ctx.as_deref(), question, on_delta).await
+}
+
+pub async fn ask_chapter_selection_impl(
+    db: &Db,
+    settings: &LlmSettings,
+    unit_id: i64,
+    quote: &str,
+    question: &str,
+    on_delta: &mut (dyn FnMut(&str) + Send),
+) -> Result<String, String> {
+    let scope = resolve_chapter(db, unit_id)?;
+    let chapter_text = ingest::cap_llm_input(&chapter_plain_text(&scope), MAX_CHAPTER_LLM_CHARS);
+    let prev_ctx = prev_context(db, &scope.units[0].0);
+    llm::ask_selection_stream(
+        settings,
+        &chapter_text,
         prev_ctx.as_deref(),
         quote,
         question,
@@ -405,11 +638,29 @@ pub fn get_book_detail_impl(db: &Db, book_id: i64) -> Result<BookDetail, String>
         .get_book(book_id)
         .map_err(|e| e.to_string())?
         .ok_or("未找到这本书")?;
-    let units = db.list_units(book_id).map_err(|e| e.to_string())?;
+    let rows = db.list_unit_rows(book_id).map_err(|e| e.to_string())?;
+    let units: Vec<Unit> = rows.iter().map(row_to_unit).collect();
     let done = units
         .iter()
         .filter(|u| u.status == UnitStatus::Done)
         .count() as i64;
+    let measured = measure_book_units(db, book_id, &rows);
+    let chapters = ingest::group_units_into_chapters(&measured)
+        .into_iter()
+        .filter_map(|g| {
+            let first_unit_id = g.unit_ids.first().copied()?;
+            let group_units: Vec<Unit> = g
+                .unit_ids
+                .iter()
+                .filter_map(|id| units.iter().find(|u| u.id == *id).cloned())
+                .collect();
+            Some(ChapterGroup {
+                title: g.title,
+                first_unit_id,
+                units: group_units,
+            })
+        })
+        .collect();
     Ok(BookDetail {
         book: BookSummary {
             id: book.id,
@@ -420,6 +671,7 @@ pub fn get_book_detail_impl(db: &Db, book_id: i64) -> Result<BookDetail, String>
             done_units: done,
         },
         units,
+        chapters,
     })
 }
 
@@ -629,6 +881,64 @@ pub async fn ask_selection(
         let _ = on_progress.send(d.to_string());
     };
     ask_selection_impl(
+        &state.db,
+        &settings,
+        unit_id,
+        &quote,
+        &question,
+        &mut on_delta,
+    )
+    .await
+}
+
+#[tauri::command]
+pub fn get_chapter_content(
+    state: State<'_, AppState>,
+    unit_id: i64,
+) -> Result<ChapterContent, String> {
+    get_chapter_content_impl(&state.db, unit_id)
+}
+
+#[tauri::command]
+pub async fn start_chapter_reading(
+    state: State<'_, AppState>,
+    unit_id: i64,
+    on_progress: tauri::ipc::Channel<String>,
+) -> Result<ReadingSession, String> {
+    let settings = load_settings(&state.app_data_dir);
+    let mut on_explain = |d: &str| {
+        let _ = on_progress.send(d.to_string());
+    };
+    start_chapter_reading_impl(&state.db, &settings, unit_id, &mut on_explain).await
+}
+
+#[tauri::command]
+pub async fn ask_chapter(
+    state: State<'_, AppState>,
+    unit_id: i64,
+    question: String,
+    on_progress: tauri::ipc::Channel<String>,
+) -> Result<String, String> {
+    let settings = load_settings(&state.app_data_dir);
+    let mut on_delta = |d: &str| {
+        let _ = on_progress.send(d.to_string());
+    };
+    ask_chapter_impl(&state.db, &settings, unit_id, &question, &mut on_delta).await
+}
+
+#[tauri::command]
+pub async fn ask_chapter_selection(
+    state: State<'_, AppState>,
+    unit_id: i64,
+    quote: String,
+    question: String,
+    on_progress: tauri::ipc::Channel<String>,
+) -> Result<String, String> {
+    let settings = load_settings(&state.app_data_dir);
+    let mut on_delta = |d: &str| {
+        let _ = on_progress.send(d.to_string());
+    };
+    ask_chapter_selection_impl(
         &state.db,
         &settings,
         unit_id,
@@ -1220,6 +1530,7 @@ mod tests {
                 base_url: "https://api.example.com".to_string(),
                 api_key: "sk-1".to_string(),
                 model: "gpt".to_string(),
+                auto_start_reading: false,
             },
         )
         .unwrap();
@@ -1258,6 +1569,269 @@ mod tests {
         let (db, dir, _unit_id) = setup_unit("missing");
         assert!(get_unit_content_impl(&db, 9999).is_err());
         assert!(get_book_detail_impl(&db, 9999).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 建一本两章三节的书：第一章（1）（2）+ 第二章，正文写到临时文件。
+    fn setup_chapter_book(tag: &str) -> (Db, PathBuf, Vec<i64>) {
+        let dir = temp_dir(tag);
+        let db = Db::open_in_memory().unwrap();
+        let book_id = db
+            .insert_book("章书", "/tmp/章书.md", "md", "2026-10-09")
+            .unwrap();
+        let specs = [
+            ("第一章（1）", "第一章第一节的正文内容。"),
+            ("第一章（2）", "第一章第二节的正文内容。"),
+            ("第二章", "第二章的全部正文内容。"),
+        ];
+        let mut ids = Vec::new();
+        for (idx, (title, body)) in specs.iter().enumerate() {
+            let file = dir.join(format!("unit_{idx}.txt"));
+            std::fs::write(&file, body.repeat(80)).unwrap();
+            let id = db
+                .insert_unit(book_id, idx as i64, title, file.to_string_lossy().as_ref())
+                .unwrap();
+            ids.push(id);
+        }
+        (db, dir, ids)
+    }
+
+    #[test]
+    fn chapter_content_groups_units_and_navigates() {
+        let (db, dir, ids) = setup_chapter_book("chapter-content");
+
+        let ch1 = get_chapter_content_impl(&db, ids[0]).unwrap();
+        assert_eq!(ch1.book_title, "章书");
+        assert_eq!(ch1.chapter_title, "第一章");
+        assert_eq!((ch1.chapter_number, ch1.chapter_count), (1, 2));
+        assert_eq!(ch1.segments.len(), 2);
+        assert!(ch1.segments[0].content.contains("第一节"));
+        assert!(ch1.segments[1].content.contains("第二节"));
+        assert_eq!(ch1.prev_chapter_unit_id, None);
+        assert_eq!(ch1.next_chapter_unit_id, Some(ids[2]));
+        assert!(ch1.images_dir.is_none(), "无插图的书应为 None");
+
+        // 章内任一小节都定位到同一章
+        let same = get_chapter_content_impl(&db, ids[1]).unwrap();
+        assert_eq!(same.chapter_number, 1);
+        assert_eq!(same.next_chapter_unit_id, Some(ids[2]));
+
+        let ch2 = get_chapter_content_impl(&db, ids[2]).unwrap();
+        assert_eq!(ch2.chapter_title, "第二章");
+        assert_eq!((ch2.chapter_number, ch2.chapter_count), (2, 2));
+        assert_eq!(ch2.prev_chapter_unit_id, Some(ids[0]));
+        assert_eq!(ch2.next_chapter_unit_id, None);
+
+        assert!(get_chapter_content_impl(&db, 9999).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn book_detail_includes_chapter_groups() {
+        let (db, dir, ids) = setup_chapter_book("detail-chapters");
+        let book_id = db.get_unit(ids[0]).unwrap().unwrap().book_id;
+        let detail = get_book_detail_impl(&db, book_id).unwrap();
+        assert_eq!(detail.units.len(), 3);
+        assert_eq!(detail.chapters.len(), 2);
+        assert_eq!(detail.chapters[0].title, "第一章");
+        assert_eq!(detail.chapters[0].first_unit_id, ids[0]);
+        assert_eq!(detail.chapters[0].units.len(), 2);
+        assert_eq!(detail.chapters[0].units[1].id, ids[1]);
+        assert_eq!(detail.chapters[1].title, "第二章");
+        assert_eq!(detail.chapters[1].units.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 写一个带嵌套目录（第1章 > 1.1/1.2，第2章 独立）的最小 EPUB。
+    fn write_nested_epub(dir: &Path) -> PathBuf {
+        use std::io::Write;
+        use zip::write::{SimpleFileOptions, ZipWriter};
+
+        const CONTAINER: &str = r#"<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>"#;
+        const OPF: &str = r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uid">
+  <metadata><dc:title>层级书</dc:title></metadata>
+  <manifest>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="c1" href="text/ch1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c2" href="text/s1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c3" href="text/s2.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c4" href="text/s3.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="c1"/><itemref idref="c2"/><itemref idref="c3"/><itemref idref="c4"/>
+  </spine>
+</package>"#;
+        const NCX: &str = r#"<?xml version="1.0"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <docTitle><text>层级书</text></docTitle>
+  <navMap>
+    <navPoint id="n1"><navLabel><text>第1章 基础</text></navLabel><content src="text/ch1.xhtml"/>
+      <navPoint id="n2"><navLabel><text>1.1 感知机</text></navLabel><content src="text/s1.xhtml"/></navPoint>
+      <navPoint id="n3"><navLabel><text>1.2 回归</text></navLabel><content src="text/s2.xhtml"/></navPoint>
+    </navPoint>
+    <navPoint id="n4"><navLabel><text>第2章 硬件</text></navLabel><content src="text/s3.xhtml"/></navPoint>
+  </navMap>
+</ncx>"#;
+        let page = |body: &str| {
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>页</title></head><body><p>{body}</p></body></html>"#
+            )
+        };
+        let files: Vec<(String, String)> = vec![
+            ("META-INF/container.xml".into(), CONTAINER.into()),
+            ("OEBPS/content.opf".into(), OPF.into()),
+            ("OEBPS/toc.ncx".into(), NCX.into()),
+            ("OEBPS/text/ch1.xhtml".into(), page("第1章引言。")),
+            ("OEBPS/text/s1.xhtml".into(), page("感知机内容。")),
+            ("OEBPS/text/s2.xhtml".into(), page("回归内容。")),
+            ("OEBPS/text/s3.xhtml".into(), page("硬件内容。")),
+        ];
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut writer = ZipWriter::new(&mut buf);
+            let options = SimpleFileOptions::default();
+            for (name, content) in &files {
+                writer.start_file(name, options).unwrap();
+                writer.write_all(content.as_bytes()).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        let path = dir.join("nested.epub");
+        std::fs::write(&path, buf.into_inner()).unwrap();
+        path
+    }
+
+    #[test]
+    fn chapter_grouping_uses_epub_toc_hierarchy() {
+        let dir = temp_dir("epub-hier");
+        let db = Db::open_in_memory().unwrap();
+        let path = write_nested_epub(&dir);
+        let summary = ingest::import_book(&db, &dir, path.to_string_lossy().as_ref()).unwrap();
+        assert_eq!(summary.total_units, 4);
+
+        let detail = get_book_detail_impl(&db, summary.id).unwrap();
+        assert_eq!(detail.units.len(), 4);
+        assert_eq!(detail.chapters.len(), 2);
+        assert_eq!(detail.chapters[0].title, "第1章 基础");
+        assert_eq!(detail.chapters[0].units.len(), 3);
+        assert_eq!(detail.chapters[1].title, "第2章 硬件");
+        assert_eq!(detail.chapters[1].units.len(), 1);
+
+        // 从 1.2 小节进入：定位到整个第1章，下一章指向第2章首节
+        let sec2 = detail.units[2].id;
+        let ch = get_chapter_content_impl(&db, sec2).unwrap();
+        assert_eq!(ch.chapter_title, "第1章 基础");
+        assert_eq!(ch.segments.len(), 3);
+        assert_eq!(ch.prev_chapter_unit_id, None);
+        assert_eq!(ch.next_chapter_unit_id, Some(detail.units[3].id));
+
+        // 源文件被移走 → 回退为按标题推导（各节独立成章）
+        std::fs::remove_file(&path).unwrap();
+        let detail2 = get_book_detail_impl(&db, summary.id).unwrap();
+        assert_eq!(detail2.chapters.len(), 4);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn start_chapter_reading_registers_each_unit_idempotently() {
+        std::env::set_var("AI_TEACHER_MOCK_LLM", "1");
+        let (db, dir, ids) = setup_chapter_book("chapter-reading");
+        let settings = LlmSettings::default();
+
+        let mut deltas: Vec<String> = Vec::new();
+        let session = start_chapter_reading_impl(&db, &settings, ids[0], &mut |d: &str| {
+            deltas.push(d.to_string());
+        })
+        .await
+        .unwrap();
+        assert_eq!(deltas.concat(), session.explanation);
+        assert!(session.explanation.contains("本章脉络"));
+        // 展示知识点 = 各小节知识点的去重并集（mock 每节产出相同 3 个）
+        assert_eq!(session.knowledge_points.len(), 3);
+
+        // 章内两小节都登记：状态 reading、复习项、摘要；下一章不受影响
+        let tomorrow = scheduler::due_date(today(), 1);
+        for uid in &ids[..2] {
+            let u = db.get_unit(*uid).unwrap().unwrap();
+            assert_eq!(u.status, "reading");
+            assert!(db.has_review_items(*uid).unwrap());
+            assert!(db.get_unit_summary(*uid).unwrap().is_some());
+        }
+        assert_eq!(db.list_due_reviews(&tomorrow).unwrap().len(), 6);
+        assert_eq!(db.get_unit(ids[2]).unwrap().unwrap().status, "unread");
+
+        // 再次领读同一章：不重复建复习项
+        start_chapter_reading_impl(&db, &settings, ids[1], &mut |_: &str| {})
+            .await
+            .unwrap();
+        assert_eq!(db.list_due_reviews(&tomorrow).unwrap().len(), 6);
+
+        // 讲解已持久化：重取章节内容直接拿到，无需重新生成
+        let ch = get_chapter_content_impl(&db, ids[0]).unwrap();
+        let saved = ch.saved_session.expect("领读后应保存讲解");
+        assert!(saved.explanation.contains("本章脉络"));
+        assert_eq!(saved.knowledge_points.len(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn chapter_content_without_reading_has_no_saved_session() {
+        let (db, dir, ids) = setup_chapter_book("no-saved");
+        let ch = get_chapter_content_impl(&db, ids[0]).unwrap();
+        assert!(ch.saved_session.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn start_chapter_reading_keeps_done_unit_status() {
+        std::env::set_var("AI_TEACHER_MOCK_LLM", "1");
+        let (db, dir, ids) = setup_chapter_book("chapter-done");
+        db.update_unit_progress(ids[0], "done", Some(0.8)).unwrap();
+        // 从章内第二节领读整章：已完成的节不回退状态
+        start_chapter_reading_impl(&db, &LlmSettings::default(), ids[1], &mut |_: &str| {})
+            .await
+            .unwrap();
+        assert_eq!(db.get_unit(ids[0]).unwrap().unwrap().status, "done");
+        assert_eq!(db.get_unit(ids[1]).unwrap().unwrap().status, "reading");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn ask_chapter_and_selection_stream_mock_answers() {
+        std::env::set_var("AI_TEACHER_MOCK_LLM", "1");
+        let (db, dir, ids) = setup_chapter_book("chapter-ask");
+        let settings = LlmSettings::default();
+
+        let mut deltas: Vec<String> = Vec::new();
+        let out = ask_chapter_impl(&db, &settings, ids[0], "这章讲了什么？", &mut |d: &str| {
+            deltas.push(d.to_string());
+        })
+        .await
+        .unwrap();
+        assert_eq!(out, "mock 回答：这章讲了什么？");
+        assert_eq!(deltas.concat(), out);
+
+        let out = ask_chapter_selection_impl(
+            &db,
+            &settings,
+            ids[1],
+            "选中的一段原文",
+            "什么意思？",
+            &mut |_: &str| {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(out, "mock 选段回答：什么意思？");
+
+        assert!(ask_chapter_impl(&db, &settings, 9999, "问", &mut |_: &str| {})
+            .await
+            .is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

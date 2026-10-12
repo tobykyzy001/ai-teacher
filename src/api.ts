@@ -6,6 +6,7 @@ export interface LlmSettings {
   base_url: string;
   api_key: string;
   model: string;
+  auto_start_reading: boolean; // 打开全新章节时自动开始 AI 领读；默认 false
 }
 
 export interface ConnectionTestResult {
@@ -42,6 +43,31 @@ export interface UnitContent {
 export interface ReadingSession {
   explanation: string; // AI 领读讲解（Markdown）
   knowledge_points: string[];
+}
+
+// ---------- 章节（阅读/领读单位；章由单元标题推导分组） ----------
+
+export interface ChapterGroup {
+  title: string;
+  first_unit_id: number; // 跳转到该章阅读页的入口 unit_id
+  units: Unit[];
+}
+
+export interface ChapterSegment {
+  unit: Unit;
+  content: string; // 该小节正文（纯文本）
+}
+
+export interface ChapterContent {
+  book_title: string;
+  chapter_title: string;
+  chapter_number: number; // 从 1 开始
+  chapter_count: number;
+  prev_chapter_unit_id: number | null; // 上一章首节的 unit_id
+  next_chapter_unit_id: number | null;
+  segments: ChapterSegment[];
+  saved_session: ReadingSession | null; // 已保存的章领读讲解；非空则直接展示不重新生成
+  images_dir: string | null; // 该书插图目录的绝对路径；无插图为 null
 }
 
 export type QType = "mcq" | "short";
@@ -106,6 +132,7 @@ export interface WrongQuestion {
 export interface BookDetail {
   book: BookSummary;
   units: Unit[];
+  chapters: ChapterGroup[]; // 与 units 同一数据源的章分组视图
 }
 
 // ---------- invoke 封装 ----------
@@ -153,6 +180,15 @@ export const api = {
     call<string>("ask", { unitId, question, ...streamArg(onDelta) }),
   askSelection: (unitId: number, quote: string, question: string, onDelta?: (s: string) => void) =>
     call<string>("ask_selection", { unitId, quote, question, ...streamArg(onDelta) }),
+
+  // 章节阅读
+  getChapterContent: (unitId: number) => call<ChapterContent>("get_chapter_content", { unitId }),
+  startChapterReading: (unitId: number, onDelta?: (s: string) => void) =>
+    call<ReadingSession>("start_chapter_reading", { unitId, ...streamArg(onDelta) }),
+  askChapter: (unitId: number, question: string, onDelta?: (s: string) => void) =>
+    call<string>("ask_chapter", { unitId, question, ...streamArg(onDelta) }),
+  askChapterSelection: (unitId: number, quote: string, question: string, onDelta?: (s: string) => void) =>
+    call<string>("ask_chapter_selection", { unitId, quote, question, ...streamArg(onDelta) }),
 
   // 做题
   generateQuiz: (unitId: number) => call<QuizQuestion[]>("generate_quiz", { unitId }),

@@ -70,6 +70,12 @@ CREATE TABLE IF NOT EXISTS unit_summaries (
     summary TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS chapter_explanations (
+    first_unit_id INTEGER PRIMARY KEY REFERENCES units(id) ON DELETE CASCADE,
+    explanation TEXT NOT NULL,
+    knowledge_points TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS learning_log (
     id INTEGER PRIMARY KEY,
     logged_date TEXT NOT NULL,
@@ -235,6 +241,18 @@ impl Db {
         })
     }
 
+    pub fn get_book_source_path(&self, book_id: i64) -> Result<Option<String>, DbError> {
+        self.with_conn(|c| {
+            c.query_row(
+                "SELECT source_path FROM books WHERE id = ?1",
+                params![book_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+    }
+
     pub fn get_book(&self, id: i64) -> Result<Option<BookRow>, DbError> {
         self.with_conn(|c| {
             c.query_row(
@@ -301,6 +319,7 @@ impl Db {
         })
     }
 
+    #[cfg(test)]
     pub fn list_units(&self, book_id: i64) -> Result<Vec<Unit>, DbError> {
         self.with_conn(|c| {
             let mut stmt = c.prepare(
@@ -308,6 +327,18 @@ impl Db {
                  WHERE book_id = ?1 ORDER BY idx",
             )?;
             let rows = stmt.query_map(params![book_id], map_unit)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        })
+    }
+
+    /// 按单元顺序列出书的单元，带 content_path（章节分组需要读单元正文字数）。
+    pub fn list_unit_rows(&self, book_id: i64) -> Result<Vec<UnitRow>, DbError> {
+        self.with_conn(|c| {
+            let mut stmt = c.prepare(
+                "SELECT id, book_id, idx, title, content_path, status, mastery FROM units
+                 WHERE book_id = ?1 ORDER BY idx",
+            )?;
+            let rows = stmt.query_map(params![book_id], map_unit_row)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
         })
     }
@@ -656,6 +687,47 @@ impl Db {
         })
     }
 
+    // ---------- chapter explanations（章领读讲解持久化，键=章首节 unit_id） ----------
+
+    pub fn get_chapter_explanation(
+        &self,
+        first_unit_id: i64,
+    ) -> Result<Option<(String, Vec<String>)>, DbError> {
+        self.with_conn(|c| {
+            c.query_row(
+                "SELECT explanation, knowledge_points FROM chapter_explanations WHERE first_unit_id = ?1",
+                params![first_unit_id],
+                |row| {
+                    let explanation: String = row.get(0)?;
+                    let kps_json: String = row.get(1)?;
+                    let kps: Vec<String> =
+                        serde_json::from_str(&kps_json).unwrap_or_default();
+                    Ok((explanation, kps))
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+    }
+
+    pub fn upsert_chapter_explanation(
+        &self,
+        first_unit_id: i64,
+        explanation: &str,
+        knowledge_points: &[String],
+        updated_at: &str,
+    ) -> Result<(), DbError> {
+        let kps_json =
+            serde_json::to_string(knowledge_points).unwrap_or_else(|_| "[]".to_string());
+        self.with_conn(|c| {
+            c.execute(
+                "INSERT OR REPLACE INTO chapter_explanations (first_unit_id, explanation, knowledge_points, updated_at) VALUES (?1, ?2, ?3, ?4)",
+                params![first_unit_id, explanation, kps_json, updated_at],
+            )?;
+            Ok(())
+        })
+    }
+
     /// 同一本书中 idx 小于当前单元的最大者（上一单元）。
     pub fn prev_unit(&self, unit_id: i64) -> Result<Option<UnitRow>, DbError> {
         self.with_conn(|c| {
@@ -982,6 +1054,34 @@ mod tests {
         assert!(db.has_review_items(u).unwrap());
         let kps = db.knowledge_points_of_unit(u).unwrap();
         assert_eq!(kps, vec!["要点".to_string()]);
+    }
+
+    #[test]
+    fn chapter_explanation_upsert_get_and_cascade() {
+        let db = Db::open_in_memory().unwrap();
+        let b = db.insert_book("书", "/x/a.md", "md", "2026-10-01").unwrap();
+        let u1 = db.insert_unit(b, 0, "第一章（1）", "/c/0.txt").unwrap();
+        let u2 = db.insert_unit(b, 1, "第一章（2）", "/c/1.txt").unwrap();
+
+        assert!(db.get_chapter_explanation(u1).unwrap().is_none());
+        db.upsert_chapter_explanation(u1, "讲解 v1", &["要点甲".to_string()], "2026-10-09 10:00:00")
+            .unwrap();
+        let (text, kps) = db.get_chapter_explanation(u1).unwrap().unwrap();
+        assert_eq!(text, "讲解 v1");
+        assert_eq!(kps, vec!["要点甲".to_string()]);
+
+        // 重新领读覆盖；不同首节互不干扰
+        db.upsert_chapter_explanation(u1, "讲解 v2", &[], "2026-10-09 11:00:00")
+            .unwrap();
+        db.upsert_chapter_explanation(u2, "另一章", &["乙".to_string()], "2026-10-09 11:00:00")
+            .unwrap();
+        let (text, kps) = db.get_chapter_explanation(u1).unwrap().unwrap();
+        assert_eq!(text, "讲解 v2");
+        assert!(kps.is_empty());
+
+        // 删书级联清除
+        db.delete_book(b).unwrap();
+        assert!(db.get_chapter_explanation(u1).unwrap().is_none());
     }
 
     #[test]

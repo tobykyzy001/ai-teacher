@@ -9,7 +9,8 @@
 - 前端：Vue 3 + TypeScript + Vite + Pinia + Naive UI，**用 pnpm**
 - 已知坑 1：本机 pnpm 11 默认拒绝依赖安装脚本（esbuild、vue-demi 需要），白名单键名是 **`allowBuilds`**（v11 新名，不是 v10 的 `onlyBuiltDependencies`，也不能写 package.json 的 `pnpm` 字段），已配在 `pnpm-workspace.yaml`；全局版在 `C:\Users\45108\AppData\Local\pnpm\config\config.yaml`
 - 已知坑 2：`vite.config.ts` 的 `server.watch.ignored` 必须忽略 `src-tauri/target/**`，否则 `tauri dev` 里 vite 因监视 cargo 正在写的 exe 而 EBUSY 崩溃
-- 已知坑 3：安装包目标是 **NSIS**（`tauri.conf.json` `bundle.targets`，简体中文界面配在 **`bundle.windows.nsis.languages`**，注意不是 `bundle.nsis`，直接放 `bundle` 下会 schema 报错）。NSIS 工具链由 CLI 首次构建时自动下载并缓存到 `%LOCALAPPDATA%\tauri\NSIS`，之后离线可打包；若哪天切回 MSI，注意打 MSI 需 WiX 且 WiX 下载走 github.com 可能超时
+- 已知坑 3：安装包目标 Windows 是 **NSIS**、macOS 是 **DMG**（`tauri.conf.json` `bundle.targets: ["nsis", "dmg"]`，CLI 按当前平台自动挑选；简体中文界面配在 **`bundle.windows.nsis.languages`**，注意不是 `bundle.nsis`，直接放 `bundle` 下会 schema 报错）。NSIS 工具链由 CLI 首次构建时自动下载并缓存到 `%LOCALAPPDATA%\tauri\NSIS`，之后离线可打包；若哪天切回 MSI，注意打 MSI 需 WiX 且 WiX 下载走 github.com 可能超时
+- 已知坑 4：本地图片（EPUB 插图）走 asset 协议展示，配置在 `tauri.conf.json` `app.security.assetProtocol`（enable + scope `$APPDATA/books/**`）就够了；**不要**在 capabilities 里加 `core:asset-protocol:default`——这个 Tauri 版本没有这个权限项，加了编译直接报 Permission not found
 - 后端：Rust（tauri 2, rusqlite, reqwest, zip+quick-xml, pdf-extract），SQLite + 文件存储，数据全部在用户 app_data_dir
 
 ## 常用命令
@@ -36,12 +37,12 @@ cd src-tauri && cargo test  # 后端全部测试（离线、无需 Tauri 运行�
 src/                  # Vue 前端（views/ 七个页面，stores/ 仅 library 缓存）
 src/api.ts            # 前后端契约
 src-tauri/src/
-├── lib.rs            # 入口：注册 dialog 插件、AppState、18 个命令
+├── lib.rs            # 入口：注册 dialog 插件、AppState、22 个命令
 ├── commands.rs       # Tauri 命令薄壳 + 可测试的 *_impl 业务逻辑
 ├── models.rs         # API 类型（serde snake_case）
-├── db.rs             # SQLite 迁移与查询（仅建表不 ALTER；含 learning_log/unit_summaries；测试用 open_in_memory）
-├── config.rs         # app_data_dir/config.json（api_key 等，勿入库勿进 git）
-├── ingest.rs         # 书籍解析与 1500–3000 字单元切分
+├── db.rs             # SQLite 迁移与查询（仅建表不 ALTER；含 learning_log/unit_summaries/chapter_explanations；测试用 open_in_memory）
+├── config.rs         # app_data_dir/config.json（api_key、auto_start_reading 等，勿入库勿进 git；新字段靠 serde default 兼容旧文件）
+├── ingest.rs         # 书籍解析与 1500–3000 字单元切分；EPUB 插图抽到 books/<id>/images/，正文插 `![alt](文件名)` 标记段，前端原位渲染
 ├── llm.rs            # OpenAI 兼容客户端 + 中文 prompt + mock 模式（长文本输出走 SSE 流式）
 └── scheduler.rs      # SM-2 调度（基线间隔 [1,2,4,7,15,30]，ease 2.5/≥1.3）
 fixtures/demo-book.md # 端到端与测试用的示例书（3 章）
@@ -50,9 +51,11 @@ fixtures/demo-book.md # 端到端与测试用的示例书（3 章）
 ## 核心机制速查
 
 - 单元首次 `start_reading` → 每个知识点建 review_item（明天到期，幂等）；答题错 → 该题对应知识点 review_item 重置为明天
+- 章（大节）= 阅读/领读单位，单元（小节）= 做题/复习单位：章节归属**不入库**，读时现算——优先重解析源文件的目录层级（EPUB NCX/nav 顶层条目为大节，`parse_file_grouped` + `unit_group_titles` 用与导入相同的切分确定性对齐单元序），源文件缺失/单元数失配时回退按单元标题推导（去"（N）"后缀）；连续聚合 + 超 3 万字强制拆段见 `group_units_into_chapters`；章级命令 `get_chapter_content`/`start_chapter_reading`/`ask_chapter`/`ask_chapter_selection` 参数仍是 unit_id（后端解析所属章）；章领读对章内每节幂等登记（与单元领读共用 `ensure_unit_registered`），章正文喂 LLM 超 1.5 万字取头尾（`cap_llm_input`）；章领读讲解持久化于 `chapter_explanations` 表（键=章首节 unit_id，重开页面直接展示，"重新领读"覆盖）；侧边栏"继续阅读"= localStorage 记录的最近阅读路由（`App.vue`，键 `ai-teacher:last-reading`）
+- 注意：`pnpm build` 只产出前端 dist，桌面应用必须 `pnpm tauri dev`/build 才会带上新前后端；判断当前应用是哪次构建 → 设置页底部"关于"显示 v版本 + git 短哈希（有未提交改动带 `-dirty`）+ 构建时间（vite.config.ts `define.__BUILD_INFO__` 注入，前端读 `src/build-info.ts`）
 - 单元全部题目都答过 → status=done，mastery=每题最近一次答题的正确率
 - 复习通过/失败都走 `scheduler.next_schedule` 更新 ease/reps/interval/due_date，条目永不删除
-- 流式（stream=true 常开）：仅领读 explain/答疑 ask/选词问 ask_selection 走 SSE，经 `tauri::ipc::Channel<String>` 推到前端（api.ts `streamArg` 助手）；出题/判分等 JSON 输出必须整段解析，不流式
+- 流式（stream=true 常开）：仅领读 explain/答疑 ask/选词问 ask_selection（含对应章级 start_chapter_reading/ask_chapter/ask_chapter_selection）走 SSE，经 `tauri::ipc::Channel<String>` 推到前端（api.ts `streamArg` 助手）；出题/判分等 JSON 输出必须整段解析，不流式
 - 领读上下文：单元首次领读时生成摘要存 `unit_summaries`（幂等）；领读/答疑带前一单元摘要，无摘要降级为它标题 + 开头摘录
 - 错题状态无独立字段：从 attempts 按题最近一次记录派生（有答错记录即入错题本，最近答对即"已解决"），重练直接复用 `submit_answer`
 - 今日统计源自 `learning_log`（一行一事件：答题记 'answer'、复习记 'review'）：今日已复习 x/y = 今日复习数 /（今日复习数+剩余到期数），连续天数从今天（无记录则昨天）往回数

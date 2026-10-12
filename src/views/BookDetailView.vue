@@ -37,30 +37,50 @@
         </div>
       </div>
 
-      <n-list v-if="detail.units.length > 0" bordered>
-        <n-list-item v-for="unit in detail.units" :key="unit.id">
-          <div class="unit-row">
-            <div class="unit-info">
-              <span class="unit-idx">{{ unit.idx + 1 }}</span>
-              <span class="unit-title">{{ unit.title }}</span>
-              <n-tag size="small" :type="statusType(unit.status)">
-                {{ statusLabel(unit.status) }}
-              </n-tag>
-              <n-tag
-                v-if="unit.mastery !== null"
-                size="small"
-                :bordered="false"
-                :type="masteryType(unit.mastery)"
-              >
-                {{ masteryText(unit.mastery) }}
-              </n-tag>
+      <n-list v-if="detail.chapters.length > 0" bordered>
+        <template v-for="ch in detail.chapters" :key="ch.first_unit_id">
+          <n-list-item class="chapter-row" @click="toggleChapter(ch.first_unit_id)">
+            <div class="chapter-line">
+              <div class="chapter-info">
+                <n-icon
+                  class="chapter-chevron"
+                  :class="{ open: expandedChapters.has(ch.first_unit_id) }"
+                >
+                  <ChevronForward />
+                </n-icon>
+                <span class="chapter-title">{{ ch.title }}</span>
+                <span class="muted small chapter-progress">
+                  {{ doneCount(ch) }}/{{ ch.units.length }} 小节已学
+                </span>
+              </div>
+              <n-button size="small" @click.stop="goChapter(ch.first_unit_id)">领读 / 阅读</n-button>
             </div>
-            <div class="unit-actions">
-              <n-button size="small" @click="goReading(unit.id)">领读</n-button>
-              <n-button size="small" type="primary" @click="goQuiz(unit.id)">做题</n-button>
-            </div>
-          </div>
-        </n-list-item>
+          </n-list-item>
+          <template v-if="expandedChapters.has(ch.first_unit_id)">
+            <n-list-item v-for="unit in ch.units" :key="unit.id" class="unit-row-indent">
+              <div class="unit-row">
+                <div class="unit-info">
+                  <span class="unit-idx">{{ unit.idx + 1 }}</span>
+                  <span class="unit-title">{{ unit.title }}</span>
+                  <n-tag size="small" :type="statusType(unit.status)">
+                    {{ statusLabel(unit.status) }}
+                  </n-tag>
+                  <n-tag
+                    v-if="unit.mastery !== null"
+                    size="small"
+                    :bordered="false"
+                    :type="masteryType(unit.mastery)"
+                  >
+                    {{ masteryText(unit.mastery) }}
+                  </n-tag>
+                </div>
+                <div class="unit-actions">
+                  <n-button size="small" type="primary" @click="goQuiz(unit.id)">做题</n-button>
+                </div>
+              </div>
+            </n-list-item>
+          </template>
+        </template>
       </n-list>
       <n-empty v-else description="本书还没有解析出任何单元" />
     </template>
@@ -70,9 +90,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import { ChevronForward } from "@vicons/ionicons5";
 import {
   NButton,
   NEmpty,
+  NIcon,
   NList,
   NListItem,
   NProgress,
@@ -81,7 +103,7 @@ import {
   NTag,
   useMessage,
 } from "naive-ui";
-import { api, type BookDetail, type UnitStatus } from "../api";
+import { api, type BookDetail, type ChapterGroup, type UnitStatus } from "../api";
 import { errText, fmtDate, percent } from "../utils";
 import { useLibraryStore } from "../stores/library";
 
@@ -98,6 +120,16 @@ const invalidId = computed(() => !Number.isInteger(bookId.value) || bookId.value
 const detail = ref<BookDetail | null>(null);
 const loading = ref(false);
 const error = ref<string | null>(null);
+
+const expandedChapters = ref<Set<number>>(new Set());
+
+function toggleChapter(firstUnitId: number): void {
+  if (expandedChapters.value.has(firstUnitId)) {
+    expandedChapters.value.delete(firstUnitId);
+  } else {
+    expandedChapters.value.add(firstUnitId);
+  }
+}
 
 async function load(): Promise<void> {
   if (invalidId.value) {
@@ -140,8 +172,12 @@ function masteryType(mastery: number | null): TagType {
   return mastery !== null && mastery >= 0.8 ? "success" : "warning";
 }
 
-function goReading(unitId: number): void {
-  router.push(`/reading/${unitId}`);
+function doneCount(ch: ChapterGroup): number {
+  return ch.units.filter((u) => u.status === "done").length;
+}
+
+function goChapter(firstUnitId: number): void {
+  router.push(`/reading/${firstUnitId}`);
 }
 
 function goQuiz(unitId: number): void {
@@ -162,6 +198,53 @@ function goQuiz(unitId: number): void {
 
 .progress-text {
   margin-top: 6px;
+}
+
+.chapter-row {
+  background: #fafafc;
+  cursor: pointer;
+}
+
+.chapter-chevron {
+  flex-shrink: 0;
+  align-self: center;
+  color: rgba(0, 0, 0, 0.45);
+  transition: transform 0.2s ease;
+}
+
+.chapter-chevron.open {
+  transform: rotate(90deg);
+}
+
+.chapter-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.chapter-info {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.chapter-title {
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chapter-progress {
+  flex-shrink: 0;
+}
+
+.unit-row-indent {
+  padding-left: 32px;
 }
 
 .unit-row {

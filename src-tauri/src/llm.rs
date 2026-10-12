@@ -335,6 +335,40 @@ pub async fn explain_stream(
     .await
 }
 
+const MOCK_CHAPTER_EXPLAIN: &str =
+    "# 背景引入\n<mock 章讲解>\n\n## 本章脉络\n<mock>\n\n## 重点梳理\n- 要点一\n- 要点二\n\n## 难点解释\n<mock>";
+
+/// 整章领读：chapter_text 为章内各小节拼接的正文（调用方已按需截断）。
+pub async fn explain_chapter_stream(
+    settings: &LlmSettings,
+    chapter_title: &str,
+    chapter_text: &str,
+    prev_context: Option<&str>,
+    on_delta: &mut (dyn FnMut(&str) + Send),
+) -> Result<String, String> {
+    if is_mock_enabled() {
+        return Ok(stream_mock_text(MOCK_CHAPTER_EXPLAIN, 5, on_delta));
+    }
+    chat_stream(
+        settings,
+        vec![
+            ChatMessage::system("你是一位耐心、风趣的中文学习助教，擅长把材料讲得通俗易懂。"),
+            ChatMessage::user(&format!(
+                "{prev}下面是一整章（《{title}》）的完整内容，请通读全章后写一篇 Markdown 格式的讲解，必须包含以下四个小节：\n\
+                 「## 背景引入」：用一两段话介绍这章在讲什么、为什么值得学；\n\
+                 「## 本章脉络」：梳理全章的内容结构，各部分如何衔接递进；\n\
+                 「## 重点梳理」：用无序列表列出 3-6 个核心要点；\n\
+                 「## 难点解释」：挑出 1-3 个最难理解的概念，用通俗的方式解释。\n\n\
+                 章节内容：\n{chapter_text}",
+                prev = prev_context_section(prev_context),
+                title = chapter_title
+            )),
+        ],
+        on_delta,
+    )
+    .await
+}
+
 pub async fn knowledge_points(
     settings: &LlmSettings,
     unit_text: &str,
@@ -723,6 +757,7 @@ mod tests {
             base_url: "http://127.0.0.1:9".to_string(),
             api_key: String::new(),
             model: "test-model".to_string(),
+            auto_start_reading: false,
         }
     }
 
@@ -754,6 +789,27 @@ mod tests {
         .await
         .unwrap();
         assert!(out.contains("背景引入"));
+    }
+
+    #[tokio::test]
+    async fn mock_chapter_explanation_streams_sections() {
+        std::env::set_var("AI_TEACHER_MOCK_LLM", "1");
+        let mut deltas: Vec<String> = Vec::new();
+        let out = explain_chapter_stream(
+            &mock_settings(),
+            "测试章",
+            "整章内容",
+            Some("《上一章》：概要"),
+            &mut |d: &str| deltas.push(d.to_string()),
+        )
+        .await
+        .unwrap();
+        assert!(out.contains("背景引入"));
+        assert!(out.contains("本章脉络"));
+        assert!(out.contains("重点梳理"));
+        assert!(out.contains("难点解释"));
+        assert!(deltas.len() >= 2, "mock 章讲解应分多段推送");
+        assert_eq!(deltas.concat(), out);
     }
 
     #[tokio::test]
@@ -958,6 +1014,7 @@ mod tests {
             base_url: format!("http://{addr}"),
             api_key: "sk-test".to_string(),
             model: "m".to_string(),
+            auto_start_reading: false,
         };
         let mut deltas: Vec<String> = Vec::new();
         let full = chat_stream(&settings, vec![ChatMessage::user("hi")], &mut |d: &str| {
