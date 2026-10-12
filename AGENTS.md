@@ -11,6 +11,7 @@
 - 已知坑 2：`vite.config.ts` 的 `server.watch.ignored` 必须忽略 `src-tauri/target/**`，否则 `tauri dev` 里 vite 因监视 cargo 正在写的 exe 而 EBUSY 崩溃
 - 已知坑 3：安装包目标 Windows 是 **NSIS**、macOS 是 **DMG**（`tauri.conf.json` `bundle.targets: ["nsis", "dmg"]`，CLI 按当前平台自动挑选；简体中文界面配在 **`bundle.windows.nsis.languages`**，注意不是 `bundle.nsis`，直接放 `bundle` 下会 schema 报错）。NSIS 工具链由 CLI 首次构建时自动下载并缓存到 `%LOCALAPPDATA%\tauri\NSIS`，之后离线可打包；若哪天切回 MSI，注意打 MSI 需 WiX 且 WiX 下载走 github.com 可能超时
 - 已知坑 4：本地图片（EPUB 插图）走 asset 协议展示，配置在 `tauri.conf.json` `app.security.assetProtocol`（enable + scope `$APPDATA/books/**`）就够了；**不要**在 capabilities 里加 `core:asset-protocol:default`——这个 Tauri 版本没有这个权限项，加了编译直接报 Permission not found
+- 已知坑 5：应用图标（`src-tauri/icons/`）是 tauri-build 在 **cargo build 时**嵌入 Mach-O 二进制的（target/debug/build/ai-teacher-*/out/ 里的哈希文件）。改图标后 `pnpm tauri dev` 不会因 icons/ 变化触发 Rust 重编译，老 icon 会一直留在 Dock——必须 `touch src-tauri/build.rs`（或任一 .rs）强制重嵌再重启。mac 用圆角 squircle 图（824/1024 形状 + 透明边距，按 Big Sur 栅格），Windows 用满幅方形 ico；macOS 不会像 iOS 自动套圆角模板，圆角必须烘进 icns
 - 后端：Rust（tauri 2, rusqlite, reqwest, zip+quick-xml, pdf-extract），SQLite + 文件存储，数据全部在用户 app_data_dir
 
 ## 常用命令
