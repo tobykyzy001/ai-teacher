@@ -2,7 +2,7 @@
   <n-message-provider>
     <n-layout has-sider style="height: 100vh">
       <n-layout-sider bordered :width="180">
-        <div class="logo">AI 老师</div>
+        <div class="logo">AI 伴读</div>
         <n-menu :options="menuOptions" :value="activeKey" @update:value="onSelect" />
         <div v-if="showContinue" class="continue-wrap">
           <n-button block secondary type="primary" @click="goContinueReading">
