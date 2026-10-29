@@ -311,7 +311,7 @@ async function goBookDetail(): Promise<void> {
 }
 
 .loading-title {
-  font-size: 16px;
+  font-size: var(--text-callout);
   font-weight: 600;
 }
 
@@ -320,10 +320,10 @@ async function goBookDetail(): Promise<void> {
 }
 
 .q-stem {
-  font-size: 17px;
+  font-size: var(--text-headline);
   font-weight: 600;
   line-height: 1.7;
-  margin-bottom: 20px;
+  margin-bottom: var(--space-5);
   white-space: pre-wrap;
 }
 
@@ -334,7 +334,7 @@ async function goBookDetail(): Promise<void> {
 }
 
 .q-result {
-  margin-top: 20px;
+  margin-top: var(--space-5);
 }
 
 .q-line {
@@ -346,7 +346,7 @@ async function goBookDetail(): Promise<void> {
 }
 
 .q-actions {
-  margin-top: 20px;
+  margin-top: var(--space-5);
   display: flex;
   justify-content: flex-end;
   align-items: center;
@@ -355,46 +355,46 @@ async function goBookDetail(): Promise<void> {
 .header-side {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .score {
   text-align: center;
-  margin-bottom: 16px;
+  margin-bottom: var(--space-4);
 }
 
 .score-num {
-  font-size: 44px;
+  font-size: var(--text-title2);
   font-weight: 700;
-  color: rgba(0, 0, 0, 0.85);
+  color: var(--label);
 }
 
 .score-sep,
 .score-total {
-  font-size: 22px;
-  color: rgba(0, 0, 0, 0.45);
-  margin: 0 4px;
+  font-size: var(--text-title3);
+  color: var(--label-3);
+  margin: 0 var(--space-1);
 }
 
 .score-label {
-  margin-left: 8px;
-  font-size: 15px;
-  color: rgba(0, 0, 0, 0.65);
+  margin-left: var(--space-2);
+  font-size: var(--text-subhead);
+  color: var(--label-2);
 }
 
 .summary-hint {
   text-align: center;
-  margin-top: 12px;
+  margin-top: var(--space-3);
 }
 
 .summary-alert {
-  margin-top: 16px;
+  margin-top: var(--space-4);
 }
 
 .summary-actions {
   display: flex;
   justify-content: center;
-  gap: 12px;
-  margin-top: 24px;
+  gap: var(--space-3);
+  margin-top: var(--space-6);
 }
 </style>

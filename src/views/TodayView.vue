@@ -326,9 +326,9 @@ async function finishItem(passed: boolean): Promise<void> {
 .hero-card {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 16px;
-  margin: 2px 0 24px;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  margin: 2px 0 var(--space-6);
 }
 
 .ring {
@@ -338,7 +338,7 @@ async function finishItem(passed: boolean): Promise<void> {
   height: 58px;
   border-radius: 50%;
   flex-shrink: 0;
-  background: conic-gradient(var(--color-accent) calc(var(--pct) * 1%), rgba(0, 0, 0, 0.07) 0);
+  background: conic-gradient(var(--accent) calc(var(--pct) * 1%), var(--fill-3) 0);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -349,37 +349,37 @@ async function finishItem(passed: boolean): Promise<void> {
   position: absolute;
   inset: 7px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.94);
+  background: var(--bg-grouped-2);
 }
 
 .ring-num {
   position: relative;
-  font-size: 13px;
+  font-size: var(--text-footnote);
   font-weight: 700;
-  color: var(--color-accent);
+  color: var(--accent);
   letter-spacing: -0.01em;
 }
 
 .hero-line {
-  font-size: 17px;
+  font-size: var(--text-headline);
   font-weight: 600;
   margin-bottom: 2px;
 }
 
 .section {
-  margin-bottom: 24px;
+  margin-bottom: var(--space-6);
 }
 
 .section-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
 }
 
 .section-title {
   margin: 0;
-  font-size: 16px;
+  font-size: var(--text-callout);
   font-weight: 600;
 }
 
@@ -387,7 +387,7 @@ async function finishItem(passed: boolean): Promise<void> {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-4);
 }
 
 .row-main {
@@ -397,8 +397,8 @@ async function finishItem(passed: boolean): Promise<void> {
 
 .row-title {
   font-weight: 600;
-  font-size: 15px;
-  margin-bottom: 4px;
+  font-size: var(--text-subhead);
+  margin-bottom: var(--space-1);
   line-height: 1.6;
 }
 
@@ -413,7 +413,7 @@ async function finishItem(passed: boolean): Promise<void> {
   .row {
     flex-direction: column;
     align-items: stretch;
-    gap: 8px;
+    gap: var(--space-2);
   }
 
   .row-side {
@@ -422,18 +422,18 @@ async function finishItem(passed: boolean): Promise<void> {
 }
 
 .review-source {
-  margin-bottom: 16px;
+  margin-bottom: var(--space-4);
 }
 
 .kp-line {
-  margin-bottom: 12px;
+  margin-bottom: var(--space-3);
 }
 
 .q-stem {
-  font-size: 16px;
+  font-size: var(--text-callout);
   font-weight: 600;
   line-height: 1.7;
-  margin-bottom: 16px;
+  margin-bottom: var(--space-4);
   white-space: pre-wrap;
 }
 
@@ -444,7 +444,7 @@ async function finishItem(passed: boolean): Promise<void> {
 }
 
 .q-result {
-  margin-top: 16px;
+  margin-top: var(--space-4);
 }
 
 .q-line {
@@ -458,8 +458,8 @@ async function finishItem(passed: boolean): Promise<void> {
 .review-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 12px;
-  margin-top: 20px;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
 }
 
 .review-actions.center {
@@ -467,7 +467,7 @@ async function finishItem(passed: boolean): Promise<void> {
 }
 
 .kp-big {
-  font-size: 22px;
+  font-size: var(--text-title2);
   font-weight: 700;
   text-align: center;
   padding: 28px 8px 8px;

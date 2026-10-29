@@ -187,13 +187,13 @@ async function doRemove(): Promise<void> {
 .book-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
-  gap: 20px 14px;
+  gap: var(--space-5) var(--space-4);
 }
 
 @media (min-width: 821px) {
   .book-grid {
     grid-template-columns: repeat(auto-fill, minmax(184px, 1fr));
-    gap: 24px 18px;
+    gap: var(--space-6) var(--space-5);
   }
 }
 
@@ -205,12 +205,12 @@ async function doRemove(): Promise<void> {
 .cover {
   position: relative;
   aspect-ratio: 2 / 3;
-  border-radius: 8px;
+  border-radius: var(--radius-card);
   overflow: hidden;
   box-shadow:
     inset 0 0 0 0.5px rgba(255, 255, 255, 0.18),
-    0 6px 18px rgba(15, 35, 60, 0.14);
-  transition: transform 0.12s ease-out;
+    0 6px 18px rgba(0, 0, 0, 0.14);
+  transition: transform var(--dur-fast) var(--spring);
 }
 
 .book-tile:active .cover {
@@ -237,7 +237,7 @@ async function doRemove(): Promise<void> {
   right: 12px;
   top: 14px;
   color: rgba(255, 255, 255, 0.95);
-  font-size: 15px;
+  font-size: var(--text-subhead);
   font-weight: 600;
   line-height: 1.45;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
@@ -251,7 +251,7 @@ async function doRemove(): Promise<void> {
   position: absolute;
   left: 24px;
   bottom: 12px;
-  font-size: 11px;
+  font-size: var(--text-caption2);
   letter-spacing: 0.08em;
   color: rgba(255, 255, 255, 0.72);
 }
@@ -271,7 +271,7 @@ async function doRemove(): Promise<void> {
 .tile-progress {
   height: 3px;
   border-radius: 2px;
-  background: rgba(0, 0, 0, 0.08);
+  background: var(--fill-3);
   margin: 12px 2px 5px;
   overflow: hidden;
 }
@@ -279,8 +279,8 @@ async function doRemove(): Promise<void> {
 .tile-progress-fill {
   height: 100%;
   border-radius: 2px;
-  background: var(--color-accent);
-  transition: width 0.3s ease;
+  background: var(--accent);
+  transition: width var(--dur) var(--spring);
 }
 
 .tile-count {

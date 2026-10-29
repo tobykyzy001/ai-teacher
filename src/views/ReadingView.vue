@@ -1146,7 +1146,7 @@ function renderMarkdown(src: string): string {
   }
 }
 
-/* 翻章箭头：悬浮小圆钮，钉在视口中线（无论正文多长都不随滚动跑），悬停变绿 */
+/* 翻章箭头：悬浮小圆钮，钉在视口中线（无论正文多长都不随滚动跑）——功能层 glass */
 .side-arrow {
   position: fixed;
   top: 50%;
@@ -1161,30 +1161,29 @@ function renderMarkdown(src: string): string {
   font-size: 22px;
   font-weight: 300;
   line-height: 1;
-  /* 液态玻璃圆钮：半透白 + 模糊 + 高光内边，悬停变实并变绿；背景透明时 iOS 原生控件会画成方块，必须给底色 */
-  color: #6b7280;
-  background: rgba(255, 255, 255, 0.55);
+  /* 背景透明时 iOS 原生控件会画成方块，必须给底色 */
+  color: var(--label-2);
+  background: var(--glass-bg);
   -webkit-backdrop-filter: blur(20px) saturate(170%);
   backdrop-filter: blur(20px) saturate(170%);
-  border: 0.5px solid rgba(255, 255, 255, 0.55);
+  border: 0.5px solid var(--glass-stroke);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    var(--glass-highlight),
     0 1px 6px rgba(0, 0, 0, 0.1);
   outline: none;
   opacity: 1;
   cursor: pointer;
   user-select: none;
   transition:
-    background 0.15s,
-    color 0.15s;
+    background var(--dur-fast) ease,
+    color var(--dur-fast) ease;
 }
 
 /* 左右位置由脚本按正文列实际矩形写入内联 left，保证始终贴正文列外缘 */
 
 .side-arrow:hover,
 .side-arrow:focus-visible {
-  color: var(--color-accent);
-  background: #fff;
+  color: var(--accent);
 }
 
 /* 阅读页自身是定高的网格单行（外层 .main 与其内部 .n-layout-scroll-container 的高度链见 App.vue）；
@@ -1214,18 +1213,18 @@ function renderMarkdown(src: string): string {
   justify-content: space-between;
   gap: 14px;
   padding: 10px 12px;
-  margin-bottom: 16px;
-  background: rgba(255, 255, 255, 0.85);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
+  margin-bottom: var(--space-4);
+  background: var(--glass-bg);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 0.5px solid var(--glass-stroke);
+  border-radius: var(--radius-card);
 }
 
 .theme-group {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .theme-btn {
@@ -1235,7 +1234,7 @@ function renderMarkdown(src: string): string {
   border: 1.5px solid transparent;
   cursor: pointer;
   padding: 0;
-  transition: transform 0.12s ease, box-shadow 0.12s ease;
+  transition: transform var(--dur-fast) var(--spring), box-shadow var(--dur-fast) ease;
 }
 
 .theme-btn:hover {
@@ -1243,19 +1242,19 @@ function renderMarkdown(src: string): string {
 }
 
 .theme-btn.active {
-  box-shadow: 0 0 0 2px var(--text-secondary), 0 0 0 3.5px var(--text-tertiary);
+  box-shadow: 0 0 0 2px var(--label-2), 0 0 0 3.5px var(--label-3);
 }
 
 .font-controls {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .font-size-label {
   min-width: 40px;
   text-align: center;
-  color: var(--text-secondary);
+  color: var(--label-2);
 }
 
 .main-col {
@@ -1317,7 +1316,7 @@ function renderMarkdown(src: string): string {
   display: block;
   max-width: 100%;
   margin: 14px auto;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
 }
 
 @media (max-width: 1100px) {
@@ -1372,7 +1371,7 @@ function renderMarkdown(src: string): string {
   cursor: pointer;
 }
 
-/* Aa 圆钮 / 返回钮：手机端阅读设置与退出入口（Apple Books 的阅读 chrome） */
+/* Aa 圆钮 / 返回钮：手机端阅读设置与退出入口（Apple Books 的阅读 chrome，功能层 glass） */
 .back-fab,
 .aa-fab {
   display: none;
@@ -1380,21 +1379,21 @@ function renderMarkdown(src: string): string {
   top: 0;
   right: 0;
   z-index: 15;
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
-  border: 0.5px solid rgba(255, 255, 255, 0.55);
-  background: rgba(255, 255, 255, 0.6);
-  -webkit-backdrop-filter: blur(16px) saturate(170%);
-  backdrop-filter: blur(16px) saturate(170%);
+  border: 0.5px solid var(--glass-stroke);
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    var(--glass-highlight),
     0 2px 8px rgba(0, 0, 0, 0.08);
-  color: var(--text-secondary);
-  font-size: 14px;
+  color: var(--label-2);
+  font-size: var(--text-footnote);
   font-weight: 600;
   cursor: pointer;
-  transition: transform 0.12s ease-out;
+  transition: transform var(--dur-fast) var(--spring);
 }
 
 .back-fab:active,
@@ -1408,22 +1407,22 @@ function renderMarkdown(src: string): string {
   top: 0;
   left: 0;
   z-index: 15;
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
-  border: 0.5px solid rgba(255, 255, 255, 0.55);
-  background: rgba(255, 255, 255, 0.6);
-  -webkit-backdrop-filter: blur(16px) saturate(170%);
-  backdrop-filter: blur(16px) saturate(170%);
+  border: 0.5px solid var(--glass-stroke);
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    var(--glass-highlight),
     0 2px 8px rgba(0, 0, 0, 0.08);
-  color: var(--text-secondary);
+  color: var(--label-2);
   font-size: 24px;
   font-weight: 300;
   line-height: 1;
   cursor: pointer;
-  transition: transform 0.12s ease-out;
+  transition: transform var(--dur-fast) var(--spring);
 }
 
 /* 手机阅读页沉浸：只留一行居中小标题，章导航隐去（翻页走两侧箭头/滑动），原文拆卡片框 */
@@ -1455,10 +1454,20 @@ function renderMarkdown(src: string): string {
     padding: 0 !important;
   }
 
+  /* 手机 running head：sticky 顶栏 + 玻璃滚动边缘（内容从栏下透出，scroll edge 近似）。
+     外层 .main(16) + 滚动容器(20/24) 的两级内边距用负偏移补掉，玻璃满幅贴窗缘 */
   .read-col .page-header {
+    position: sticky;
+    top: -36px;
+    z-index: 5;
     flex-direction: row;
     justify-content: center;
-    margin-bottom: 4px;
+    margin: 0 -40px 4px;
+    padding: 40px 16px 8px;
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    border-bottom: 0.5px solid var(--separator);
   }
 
   .read-col .page-header > div:first-child {
@@ -1466,8 +1475,10 @@ function renderMarkdown(src: string): string {
   }
 
   .read-col .page-title {
-    font-size: 13px;
+    font-size: var(--text-caption1);
     font-weight: 500;
+    color: var(--label-2);
+    letter-spacing: 0.02em;
   }
 
   .read-col .page-subtitle {
@@ -1484,12 +1495,12 @@ function renderMarkdown(src: string): string {
 }
 
 .section {
-  margin-bottom: 20px;
+  margin-bottom: var(--space-5);
 }
 
 .chapter-nav {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   flex-shrink: 0;
 }
 
@@ -1499,9 +1510,9 @@ function renderMarkdown(src: string): string {
 
 .seg-title {
   margin: 28px 0 10px;
-  font-size: 17px;
+  font-size: var(--text-headline);
   font-weight: 600;
-  scroll-margin-top: 16px;
+  scroll-margin-top: var(--space-4);
 }
 
 .seg-title:first-child {
@@ -1516,12 +1527,12 @@ function renderMarkdown(src: string): string {
 .kp-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 12px;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
 }
 
 .retry-btn {
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 
 .stream-hint {
@@ -1531,7 +1542,7 @@ function renderMarkdown(src: string): string {
 .ask-row {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .ask-row .n-input {
@@ -1539,12 +1550,12 @@ function renderMarkdown(src: string): string {
 }
 
 .qa-list {
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 
 .qa-item {
-  padding: 12px 0;
-  border-bottom: 1px dashed #efeff5;
+  padding: var(--space-3) 0;
+  border-bottom: 0.5px dashed var(--separator);
 }
 
 .qa-item:last-child {
@@ -1560,7 +1571,7 @@ function renderMarkdown(src: string): string {
 
 .qa-q {
   font-weight: 500;
-  margin-bottom: 8px;
+  margin-bottom: var(--space-2);
 }
 
 .qa-a-body {
@@ -1571,11 +1582,11 @@ function renderMarkdown(src: string): string {
 .qa-typing {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .qa-error {
-  color: #d03050;
+  color: var(--sys-red);
   white-space: pre-wrap;
 }
 
@@ -1584,25 +1595,25 @@ function renderMarkdown(src: string): string {
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  font-size: 12px;
+  font-size: var(--text-caption1);
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #eef0f3;
-  color: rgba(0, 0, 0, 0.6);
+  background: var(--fill-3);
+  color: var(--label-2);
 }
 
 .qa-tag.ai {
-  background: #e0f2e9;
-  color: var(--color-accent);
+  background: var(--accent-fill);
+  color: var(--accent);
 }
 
 .footer-bar {
   margin-top: 4px;
-  padding: 16px 20px;
-  background: #fafafc;
-  border: 1px solid #efeff5;
-  border-radius: 8px;
+  padding: var(--space-4) var(--space-5);
+  background: var(--fill-4);
+  border: 0.5px solid var(--separator);
+  border-radius: var(--radius-control);
 }
 
 .quiz-list {
@@ -1615,17 +1626,17 @@ function renderMarkdown(src: string): string {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 0;
+  padding: var(--space-2) 0;
 }
 
 .quiz-row + .quiz-row {
-  border-top: 1px dashed #efeff5;
+  border-top: 0.5px dashed var(--separator);
 }
 
 .quiz-title {
   flex: 1;
   min-width: 0;
-  font-size: 14px;
+  font-size: var(--text-footnote);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1637,33 +1648,33 @@ function renderMarkdown(src: string): string {
 }
 
 .quote-warn {
-  margin-bottom: 12px;
+  margin-bottom: var(--space-3);
 }
 
 .quote-block {
-  background: #f7f8fa;
-  border: 1px solid #efeff5;
-  border-radius: 4px;
+  background: var(--fill-4);
+  border: 0.5px solid var(--separator);
+  border-radius: var(--radius-control);
   padding: 10px 12px;
   max-height: 140px;
   overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 13px;
+  font-size: var(--text-footnote);
   line-height: 1.7;
-  color: rgba(0, 0, 0, 0.55);
-  margin-bottom: 16px;
+  color: var(--label-2);
+  margin-bottom: var(--space-4);
 }
 
 .rounds {
   max-height: 44vh;
   overflow-y: auto;
-  margin-bottom: 12px;
+  margin-bottom: var(--space-3);
 }
 
 .round {
   padding: 10px 0;
-  border-bottom: 1px dashed #efeff5;
+  border-bottom: 0.5px dashed var(--separator);
 }
 
 .round:last-child {
@@ -1680,23 +1691,23 @@ function renderMarkdown(src: string): string {
 }
 
 .md {
-  font-size: 15px;
+  font-size: var(--text-subhead);
   line-height: 1.8;
   word-break: break-word;
 }
 
 .md :deep(h3) {
-  font-size: 17px;
+  font-size: var(--text-headline);
   margin: 18px 0 8px;
 }
 
 .md :deep(h4) {
-  font-size: 16px;
+  font-size: var(--text-callout);
   margin: 14px 0 6px;
 }
 
 .md :deep(h5) {
-  font-size: 15px;
+  font-size: var(--text-subhead);
   margin: 12px 0 6px;
 }
 
@@ -1720,7 +1731,7 @@ function renderMarkdown(src: string): string {
 }
 
 .md :deep(code) {
-  background: #f2f3f5;
+  background: var(--fill-3);
   padding: 1px 6px;
   border-radius: 4px;
   font-size: 0.92em;
@@ -1729,15 +1740,15 @@ function renderMarkdown(src: string): string {
 .md :deep(blockquote) {
   margin: 8px 0;
   padding: 2px 12px;
-  border-left: 3px solid #dfe2e8;
-  color: rgba(0, 0, 0, 0.62);
+  border-left: 3px solid var(--separator-opaque);
+  color: var(--label-2);
 }
 
 .md :deep(pre) {
   margin: 10px 0;
   padding: 10px 12px;
-  background: #f2f3f5;
-  border: 1px solid #e8eaf0;
+  background: var(--fill-4);
+  border: 0.5px solid var(--separator);
   border-radius: 6px;
   overflow-x: auto;
   white-space: pre;
@@ -1746,7 +1757,7 @@ function renderMarkdown(src: string): string {
 .md :deep(pre code) {
   background: none;
   padding: 0;
-  font-size: 13px;
+  font-size: var(--text-footnote);
   line-height: 1.6;
 }
 
@@ -1754,18 +1765,18 @@ function renderMarkdown(src: string): string {
   border-collapse: collapse;
   margin: 10px 0;
   width: 100%;
-  font-size: 14px;
+  font-size: var(--text-footnote);
 }
 
 .md :deep(th),
 .md :deep(td) {
-  border: 1px solid #e4e7ed;
+  border: 0.5px solid var(--separator);
   padding: 6px 10px;
   text-align: left;
 }
 
 .md :deep(th) {
-  background: #f7f8fa;
+  background: var(--fill-4);
   font-weight: 600;
 }
 

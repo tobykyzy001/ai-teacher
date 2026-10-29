@@ -1,160 +1,172 @@
 import type { GlobalThemeOverrides } from "naive-ui";
 
 /**
- * Apple Human Interface Guidelines 设计令牌 → Naive UI 主题覆盖（v2）。
- *
- * 视觉原则（对标 macOS 26 Finder / Apple Music）：
- * - 侧栏白底并入完整色调，不再追求全窗"奶油渐变"
- * - 激活项：白色圆角块（Apple Music 同款），为层级最重要的导航信号
- * - 按钮：默认按钮 白底+厚边框+内结构，不过度"轻浮"；主按钮维持绿色
- * - 文字层级：rgba 透明黑表达，符合系统无障碍感知
+ * Apple HIG 设计令牌 → Naive UI 主题覆盖（v3，严格态）。
+ * 所有数值与 src/style.css :root 的令牌一一对应；改这边必须同步那边。
+ * 依据 developer.apple.com/design/human-interface-guidelines：
+ * - macOS 界面默认 13pt；按钮/输入统一胶囊化（iOS 26 起的系统控件形态）
+ * - accent 只承担"主要操作"——primary 实心胶囊；default 按钮不显形（plain 语言）
+ * - 语义色 = iOS 系统色；亮色 #34C759/#FF9500/#FF3B30，暗色 #30D158/#FFD60A/#FF453A
  */
-export const appleTheme: GlobalThemeOverrides = {
-  common: {
-    fontFamily: `-apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif`,
-    fontSize: "15px",
-    lineHeight: "1.55",
+function appleTheme(dark: boolean): GlobalThemeOverrides {
+  return {
+    common: {
+      fontFamily: `-apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif`,
+      fontSize: "13px", // macOS 界面默认字号（Typography: macOS 13pt）
+      lineHeight: "1.45",
 
-    // —— 强调色（保留项目既定绿色）
-    primaryColor: "#007AFF",
-    primaryColorHover: "#3391FF",
-    primaryColorPressed: "#0062CC",
-    primaryColorSuppl: "#3391FF",
-    infoColor: "#007AFF",
-    infoColorHover: "#3391FF",
-    infoColorPressed: "#0062CC",
-    warningColor: "#FF9500",
-    warningColorHover: "#FFB340",
-    warningColorPressed: "#D07E00",
-    errorColor: "#FF3B30",
-    errorColorHover: "#FF4A3F",
-    errorColorPressed: "#B42545",
+      primaryColor: dark ? "#0A84FF" : "#007AFF",
+      primaryColorHover: dark ? "#409CFF" : "#3391FF",
+      primaryColorPressed: dark ? "#0066CC" : "#0062CC",
+      primaryColorSuppl: dark ? "#409CFF" : "#3391FF",
+      infoColor: dark ? "#0A84FF" : "#007AFF",
+      infoColorHover: dark ? "#409CFF" : "#3391FF",
+      infoColorPressed: dark ? "#0066CC" : "#0062CC",
+      warningColor: dark ? "#FFD60A" : "#FF9500",
+      warningColorHover: dark ? "#FFDF4F" : "#FFB340",
+      warningColorPressed: dark ? "#D4B008" : "#D07E00",
+      errorColor: dark ? "#FF453A" : "#FF3B30",
+      errorColorHover: dark ? "#FF6961" : "#FF4A3F",
+      errorColorPressed: dark ? "#D70015" : "#D70015",
+      successColor: dark ? "#30D158" : "#34C759",
 
-    // —— 文字（透明灰，Apple 的层级）
-    textColorBase: "rgba(0, 0, 0, 0.87)",
-    textColor1: "rgba(0, 0, 0, 0.87)",
-    textColor2: "rgba(0, 0, 0, 0.60)",
-    textColor3: "rgba(0, 0, 0, 0.42)",
+      textColorBase: dark ? "#FFFFFF" : "#000000",
+      textColor1: dark ? "#FFFFFF" : "#000000",
+      textColor2: dark ? "rgba(235, 235, 245, 0.6)" : "rgba(60, 60, 67, 0.6)",
+      textColor3: dark ? "rgba(235, 235, 245, 0.3)" : "rgba(60, 60, 67, 0.3)",
 
-    // —— 背景基底（v2: 全白体系，侧栏不再灰块）
-    bodyColor: "#FFFFFF",
-    cardColor: "#FFFFFF",
-    tableColor: "#FFFFFF",
-    popoverColor: "#FFFFFF",
+      bodyColor: dark ? "#000000" : "#F2F2F7",
+      cardColor: dark ? "#1C1C1E" : "#FFFFFF",
+      tableColor: dark ? "#1C1C1E" : "#FFFFFF",
+      popoverColor: dark ? "#1C1C1E" : "#FFFFFF",
+      modalColor: dark ? "#1C1C1E" : "#FFFFFF",
+      inputColor: dark ? "#1C1C1E" : "#FFFFFF",
+      actionColor: dark ? "#1C1C1E" : "#FFFFFF",
 
-    // —— 边框：Finder 用 1px 实线，但需要轻微存在感
-    borderColor: "rgba(0, 0, 0, 0.10)",
-    dividerColor: "rgba(0, 0, 0, 0.09)",
+      borderColor: dark ? "rgba(84, 84, 88, 0.6)" : "rgba(60, 60, 67, 0.29)",
+      dividerColor: dark ? "rgba(84, 84, 88, 0.6)" : "rgba(60, 60, 67, 0.29)",
 
-    // —— 圆角：苹果 6-8px，窗口级 12px
-    borderRadius: "7px",
-    borderRadiusSmall: "6px",
-  },
+      borderRadius: "8px",
+      borderRadiusSmall: "8px",
+    },
 
-  // —— 按钮：Apple 风格，朴素坚固
-  Button: {
-    heightLarge: "36px",
-    heightMedium: "34px",
-    heightSmall: "28px",
-    heightTiny: "24px",
-    paddingLarge: "0 18px",
-    paddingMedium: "0 16px",
-    paddingSmall: "0 12px",
-    paddingTiny: "0 8px",
-    fontSizeLarge: "15px",
-    fontSizeMedium: "14px",
-    fontSizeSmall: "13px",
-    fontSizeTiny: "12px",
-    borderRadiusLarge: "8px",
-    borderRadiusMedium: "7px",
-    borderRadiusSmall: "6px",
-    borderRadiusTiny: "6px",
+    // —— 按钮：主 = accent 实心胶囊；次 = plain（不显形，accent 文字/默认文字）
+    Button: {
+      heightLarge: "50px", // iOS 主按钮标准高（≥44 触控）
+      heightMedium: "36px",
+      heightSmall: "30px",
+      heightTiny: "24px",
+      paddingLarge: "0 24px",
+      paddingMedium: "0 16px",
+      paddingSmall: "0 14px",
+      paddingTiny: "0 8px",
+      fontSizeLarge: "17px",
+      fontSizeMedium: "15px",
+      fontSizeSmall: "13px",
+      fontSizeTiny: "11px",
+      fontWeightMedium: "600",
+      fontWeightLarge: "600",
+      borderRadiusLarge: "999px",
+      borderRadiusMedium: "999px",
+      borderRadiusSmall: "999px",
+      borderRadiusTiny: "999px",
+      textColorPrimary: "#FFFFFF",
+      textColorHoverPrimary: "#FFFFFF",
+      textColorPressedPrimary: "#FFFFFF",
+      textColorFocusPrimary: "#FFFFFF",
+      textColorDisabledPrimary: "rgba(255, 255, 255, 0.6)",
+      // default：plain 语言——无底色，默认文字色；hover 才给 fill-4 抬一手
+      colorSecondary: "transparent",
+      colorSecondaryHover: dark
+        ? "rgba(116, 116, 128, 0.18)"
+        : "rgba(116, 116, 128, 0.08)",
+      colorSecondaryPressed: dark
+        ? "rgba(118, 118, 128, 0.24)"
+        : "rgba(118, 118, 128, 0.12)",
+      colorSecondaryFocus: "transparent",
+      borderSecondary: "1px solid transparent",
+      borderHoverSecondary: "1px solid transparent",
+      borderPressedSecondary: "1px solid transparent",
+      textColor: dark ? "#FFFFFF" : "#000000",
+      textColorHover: dark ? "#FFFFFF" : "#000000",
+      textColorPressed: dark ? "#FFFFFF" : "#000000",
+    },
 
-    // 默认/次要按钮：白底 + 较实的边框与 hover——Apple 按钮的"存在感"
-    colorSecondary: "#FFFFFF",
-    colorSecondaryHover: "rgba(0, 0, 0, 0.03)",
-    colorSecondaryPressed: "rgba(0, 0, 0, 0.06)",
-    colorSecondaryFocus: "#FFFFFF",
-    borderSecondary: "1px solid rgba(0, 0, 0, 0.16)",
-    borderHoverSecondary: "1px solid rgba(0, 0, 0, 0.22)",
-    borderPressedSecondary: "1px solid rgba(0, 0, 0, 0.28)",
-    textColor: "rgba(0, 0, 0, 0.87)",
-    textColorHover: "rgba(0, 0, 0, 0.75)",
-    textColorPressed: "rgba(0, 0, 0, 0.65)",
-  },
+    // —— 输入框：细分隔 + 聚焦 accent 环
+    Input: {
+      heightMedium: "36px",
+      heightLarge: "44px",
+      heightSmall: "28px",
+      fontSizeMedium: "15px",
+      fontSizeLarge: "17px",
+      fontSizeSmall: "13px",
+      paddingMedium: "2px 12px",
+      borderRadius: "8px",
+      borderRadiusSmall: "8px",
+      border: dark
+        ? "0.5px solid rgba(84, 84, 88, 0.6)"
+        : "0.5px solid rgba(60, 60, 67, 0.29)",
+      borderHover: dark
+        ? "0.5px solid rgba(84, 84, 88, 0.8)"
+        : "0.5px solid rgba(60, 60, 67, 0.4)",
+      borderFocus: "1px solid rgba(0, 122, 255, 0.5)",
+      boxShadowFocus: "0 0 0 3px rgba(0, 122, 255, 0.24)",
+      color: dark ? "#1C1C1E" : "#FFFFFF",
+      colorFocusBackground: dark ? "#1C1C1E" : "#FFFFFF",
+    },
 
-  // —— 输入框：圆角 7px、内描边、聚焦色环
-  Input: {
-    heightMedium: "34px",
-    heightLarge: "36px",
-    heightSmall: "28px",
-    fontSizeMedium: "14px",
-    fontSizeLarge: "15px",
-    fontSizeSmall: "13px",
-    paddingMedium: "2px 12px",
-    borderRadius: "7px",
-    borderRadiusSmall: "6px",
-    border: "1px solid rgba(0, 0, 0, 0.16)",
-    borderHover: "1px solid rgba(0, 0, 0, 0.22)",
-    borderFocus: "1px solid rgba(0, 122, 255, 0.5)",
-    boxShadowFocus: "0 0 0 3px rgba(0, 122, 255, 0.16)",
-    color: "#FFFFFF",
-    colorFocusBackground: "#FFFFFF",
-  },
+    // —— 卡片：内容层标准材质，零投影零玻璃
+    Card: {
+      borderRadius: "12px",
+      paddingMedium: "16px",
+      paddingSizeLarge: "20px 24px",
+      borderColor: dark ? "rgba(84, 84, 88, 0.6)" : "rgba(60, 60, 67, 0.29)",
+      borderWidth: "0.5px",
+      boxShadow: "none",
+    },
 
-  // —— 卡片：白底 + 厚一点的实边框 + 微 shadow，从奶油底里"站"出来
-  Card: {
-    borderRadius: "10px",
-    paddingMedium: "18px 20px",
-    paddingSizeLarge: "20px 24px",
-    borderColor: "rgba(0, 0, 0, 0.09)",
-    boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04), 0 2px 12px rgba(0, 0, 0, 0.04)",
-  },
+    // —— 标签：胶囊
+    Tag: {
+      borderRadius: "999px",
+      heightTiny: "20px",
+      heightSmall: "22px",
+      heightMedium: "26px",
+      fontSizeTiny: "11px",
+      fontSizeSmall: "12px",
+      fontSizeMedium: "13px",
+    },
 
-  // —— 标签：胶囊
-  Tag: {
-    borderRadius: "12px",
-    heightTiny: "20px",
-    heightSmall: "22px",
-    heightMedium: "26px",
-    fontSizeTiny: "11px",
-    fontSizeSmall: "12px",
-    fontSizeMedium: "13px",
-  },
+    List: { fontSize: "15px" },
+    Dialog: { borderRadius: "14px" },
 
-  // —— 列表
-  List: {
-    fontSize: "15px",
-  },
+    // —— 侧栏菜单：选中 = accent soft 块（macOS 26 侧栏选中语言）
+    Menu: {
+      itemHeight: "40px",
+      dividerColor: dark ? "rgba(84, 84, 88, 0.6)" : "rgba(60, 60, 67, 0.29)",
+      itemColorHover: dark
+        ? "rgba(255, 255, 255, 0.07)"
+        : "rgba(0, 0, 0, 0.045)",
+      itemColorActive: dark ? "rgba(10, 132, 255, 0.24)" : "rgba(0, 122, 255, 0.15)",
+      itemColorActiveHover: dark
+        ? "rgba(10, 132, 255, 0.3)"
+        : "rgba(0, 122, 255, 0.2)",
+      itemTextColor: dark ? "rgba(235, 235, 245, 0.85)" : "rgba(0, 0, 0, 0.85)",
+      itemTextColorHover: dark ? "#FFFFFF" : "#000000",
+      itemTextColorActive: dark ? "#409CFF" : "#007AFF",
+    },
 
-  // —— 对话框/模态
-  Dialog: {
-    borderRadius: "12px",
-  },
+    Message: {
+      borderRadius: "999px",
+      maxWidth: "440px",
+    },
 
-  // —— 菜单：选中态用更实的激活色
-  Menu: {
-    itemHeight: "40px",
-    dividerColor: "rgba(0, 0, 0, 0.09)",
-    // 侧栏在白底下：激活项为深一点的「选中感」（Apple Music 浅色模式同款思路）
-    itemColorHover: "rgba(0, 0, 0, 0.05)",
-    itemColorActive: "rgba(0, 0, 0, 0.08)",
-    itemColorActiveHover: "rgba(0, 0, 0, 0.10)",
-    itemTextColor: "rgba(0, 0, 0, 0.75)",
-    itemTextColorHover: "rgba(0, 0, 0, 0.87)",
-    itemTextColorActive: "rgba(0, 0, 0, 0.87)",
-  },
+    Switch: {
+      railHeightLarge: "31px", // iOS switch 51×31
+      railHeightMedium: "24px",
+      railHeightSmall: "20px",
+    },
+  };
+}
 
-  // —— 消息/通知
-  Message: {
-    borderRadius: "10px",
-    maxWidth: "440px",
-  },
-
-  // —— 开关
-  Switch: {
-    railHeightLarge: "28px",
-    railHeightMedium: "24px",
-    railHeightSmall: "20px",
-  },
-};
+export const appleThemeLight = appleTheme(false);
+export const appleThemeDark = appleTheme(true);
