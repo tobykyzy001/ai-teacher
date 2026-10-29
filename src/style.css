@@ -25,10 +25,10 @@
   --fill-3: rgba(118, 118, 128, 0.12);
   --fill-4: rgba(116, 116, 128, 0.08);
 
-  --accent: #007aff;
-  --accent-hover: #3391ff;
-  --accent-pressed: #0062cc;
-  --accent-fill: rgba(0, 122, 255, 0.15); /* tint 底仅留给交互态 */
+  --accent: #af52de;
+  --accent-hover: #c06fea;
+  --accent-pressed: #9b3ec7;
+  --accent-fill: rgba(175, 82, 222, 0.16); /* tint 底仅留给交互态 */
   --sys-green: #34c759;
   --sys-orange: #ff9500;
   --sys-red: #ff3b30;
@@ -103,10 +103,10 @@
     --fill-3: rgba(118, 118, 128, 0.24);
     --fill-4: rgba(116, 116, 128, 0.18);
 
-    --accent: #0a84ff;
-    --accent-hover: #409cff;
-    --accent-pressed: #0066cc;
-    --accent-fill: rgba(10, 132, 255, 0.24);
+    --accent: #bf5af2;
+    --accent-hover: #d39bf5;
+    --accent-pressed: #a434d0;
+    --accent-fill: rgba(191, 90, 242, 0.26);
     --sys-green: #30d158;
     --sys-orange: #ffd60a;
     --sys-red: #ff453a;
@@ -130,7 +130,7 @@
   --border-strong: var(--separator-opaque);
   --color-accent: var(--accent);
   --color-accent-info: var(--accent);
-  --color-focus-ring: rgba(0, 122, 255, 0.24);
+  --color-focus-ring: rgba(175, 82, 222, 0.24);
   --radius-control-legacy: 7px;
 }
 
@@ -211,7 +211,7 @@ h6 {
 }
 
 ::selection {
-  background: rgba(0, 122, 255, 0.2);
+  background: rgba(175, 82, 222, 0.22);
 }
 
 :focus-visible {
@@ -318,7 +318,7 @@ h6 {
 }
 
 .btn-tinted.n-button:not(.n-button--disabled):hover {
-  background: rgba(0, 122, 255, 0.22) !important;
+  background: rgba(175, 82, 222, 0.24) !important;
 }
 
 /* 圆形图标按钮：页面头部轻量操作（功能层 → 允许 glass） */

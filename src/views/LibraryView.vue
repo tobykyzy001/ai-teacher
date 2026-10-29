@@ -34,9 +34,18 @@
         class="book-tile"
         @click="openBook(book)"
       >
-        <div class="cover" :style="coverStyle(book.title)">
-          <span class="cover-title">{{ book.title }}</span>
-          <span class="cover-format">{{ book.format.toUpperCase() }}</span>
+        <div class="cover" :style="book.cover_path ? {} : coverStyle(book.title)">
+          <img
+            v-if="book.cover_path"
+            class="cover-img"
+            :src="coverSrc(book.cover_path)"
+            :alt="book.title"
+            @error="onCoverError(book)"
+          />
+          <template v-else>
+            <span class="cover-title">{{ book.title }}</span>
+            <span class="cover-format">{{ book.format.toUpperCase() }}</span>
+          </template>
           <n-button class="cover-close" quaternary title="删除" @click.stop="askRemove(book)">
             <n-icon :size="13"><Close /></n-icon>
           </n-button>
@@ -71,6 +80,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Close } from "@vicons/ionicons5";
 import {
@@ -116,6 +126,15 @@ function coverStyle(title: string): Record<string, string> {
   }
   const [a, b] = COVER_PALETTES[h % COVER_PALETTES.length];
   return { backgroundImage: `linear-gradient(150deg, ${a}, ${b})` };
+}
+
+// EPUB 内嵌封面走 asset 协议原图展示；加载失败回退哈希渐变大字封面
+function coverSrc(path: string): string {
+  return convertFileSrc(path);
+}
+
+function onCoverError(book: BookSummary): void {
+  book.cover_path = undefined;
 }
 
 async function refresh(force = false): Promise<void> {
@@ -215,6 +234,15 @@ async function doRemove(): Promise<void> {
 
 .book-tile:active .cover {
   transform: scale(0.97);
+}
+
+/* EPUB 真封面：等比铺满 2:3 书型，书脊暗纹 (::before) 保留在外层 */
+.cover-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .cover::before {

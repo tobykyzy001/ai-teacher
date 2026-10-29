@@ -16,7 +16,8 @@ MVP（v0.1）已交付：导入书 → 领读 → 做题 → 间隔复习 的完
 | PDF 导入稳健性 | 解析隔离 `catch_unwind`：字体编码异常的 PDF 不再 panic 整个应用；抽取全空（扫描件/纯图片）给出明确提示而非「导入成功但无内容」；清理页眉页脚/页码/软换行/连字符断词与 CJK 兼容字符（U+2F00、U+F900 区）；按 `第N章`/`Chapter N`/编号标题切章，无标题时按页数均分，不再整本挤成「正文」一章 | 常见中文 PDF 稳定导入，书详情页按章分组；扫描件提示「未提取到文本」 | ✅ |
 | iOS 端 | 修通 Xcode 27 swift-rs 符号链接（llvm-tools 全局化 `@_cdecl`）；`tauri ios init` 生成 gen/apple 工程（brew 失效用 stub 过依赖检查）；`pnpm tauri ios dev` 模拟器端到端；`pnpm tauri ios build` 出 IPA + devicectl 免费签名真机部署 | 模拟器启动 app 且页面可交互；真机装上并可运行 | ✅ 模拟器+真机 IPA 已装，待真机最终点验 |
 | 端设备自适应 | 三档断点（≤820 / 821–1100 / >1100）：手机与 iPad mini 竖屏侧边栏换底部 Tab 栏（含「继续阅读」快捷项、iOS 安全区适配）、iPad 竖屏/窄窗口收拢为图标侧栏、宽屏保持完整侧栏；标题区窄屏竖排、阅读页 AI 栏平板区间压窄、错题筛选条窄屏堆叠 | iPhone 16 Pro（402×874）底部 Tab 导航可用；iPad 横竖屏布局不挤压 | ✅ |
-| 液态玻璃外观 | 对齐 iOS 26 / iPadOS 26 / macOS 26 Liquid Glass 风格的 Web 侧模拟：背景细腻渐变 + 侧边栏/底部 Tab 栏/卡片 backdrop-filter 玻璃化（模糊+半透明+高光内边）、大圆角、内容延伸到标题栏（macOS `titleBarStyle: Overlay` + 透明窗口）；原生控件风格由系统窗口部件自动提供，不动 Naive UI 组件主体 | 三档断点下窗体呈玻璃质感、文字与按钮在对眩光下可读、Tauri WKWebView 下无闪烁 | ☐ |
+| 严格 Apple 设计体系 | 按 developer.apple.com/design HIG 逐条落地：设计令牌单一来源（style.css :root + theme.ts 双套明暗）、Liquid Glass 只留功能层（侧栏/Tab/浮层/悬浮钮，内容层标准材质零投影）、Apple text styles 字号档、8pt 栅格、同心圆角、胶囊按钮、systemPurple accent、明暗动态色 + naive darkTheme 随系统、弹簧动效 + reduced-motion 兜底 | 七视图无硬编码色值/字号；断点两端的桌面/手机形态经截图核验 | ✅ |
+| 书架真封面 | EPUB 内嵌封面（EPUB3 cover-image / EPUB2 meta cover）导入时提取到 `books/<id>/cover.<ext>`（不入库不加列，list_books 顺带为老书补建），书架优先显示原封面；PDF/MD/TXT 保留哈希渐变大字封面 | EPUB 书架出真封面，加载失败/无封面回退渐变 | ✅ |
 
 ## 迭代 2 —— 学习深度（中期）
 

@@ -15,13 +15,13 @@ function appleTheme(dark: boolean): GlobalThemeOverrides {
       fontSize: "13px", // macOS 界面默认字号（Typography: macOS 13pt）
       lineHeight: "1.45",
 
-      primaryColor: dark ? "#0A84FF" : "#007AFF",
-      primaryColorHover: dark ? "#409CFF" : "#3391FF",
-      primaryColorPressed: dark ? "#0066CC" : "#0062CC",
-      primaryColorSuppl: dark ? "#409CFF" : "#3391FF",
-      infoColor: dark ? "#0A84FF" : "#007AFF",
-      infoColorHover: dark ? "#409CFF" : "#3391FF",
-      infoColorPressed: dark ? "#0066CC" : "#0062CC",
+      primaryColor: dark ? "#BF5AF2" : "#AF52DE",
+      primaryColorHover: dark ? "#D39BF5" : "#C06FEA",
+      primaryColorPressed: dark ? "#A434D0" : "#9B3EC7",
+      primaryColorSuppl: dark ? "#D39BF5" : "#C06FEA",
+      infoColor: dark ? "#BF5AF2" : "#AF52DE",
+      infoColorHover: dark ? "#D39BF5" : "#C06FEA",
+      infoColorPressed: dark ? "#A434D0" : "#9B3EC7",
       warningColor: dark ? "#FFD60A" : "#FF9500",
       warningColorHover: dark ? "#FFDF4F" : "#FFB340",
       warningColorPressed: dark ? "#D4B008" : "#D07E00",
@@ -109,8 +109,8 @@ function appleTheme(dark: boolean): GlobalThemeOverrides {
       borderHover: dark
         ? "0.5px solid rgba(84, 84, 88, 0.8)"
         : "0.5px solid rgba(60, 60, 67, 0.4)",
-      borderFocus: "1px solid rgba(0, 122, 255, 0.5)",
-      boxShadowFocus: "0 0 0 3px rgba(0, 122, 255, 0.24)",
+      borderFocus: "1px solid rgba(175, 82, 222, 0.5)",
+      boxShadowFocus: "0 0 0 3px rgba(175, 82, 222, 0.24)",
       color: dark ? "#1C1C1E" : "#FFFFFF",
       colorFocusBackground: dark ? "#1C1C1E" : "#FFFFFF",
     },
@@ -146,13 +146,15 @@ function appleTheme(dark: boolean): GlobalThemeOverrides {
       itemColorHover: dark
         ? "rgba(255, 255, 255, 0.07)"
         : "rgba(0, 0, 0, 0.045)",
-      itemColorActive: dark ? "rgba(10, 132, 255, 0.24)" : "rgba(0, 122, 255, 0.15)",
+      itemColorActive: dark
+        ? "rgba(191, 90, 242, 0.26)"
+        : "rgba(175, 82, 222, 0.16)",
       itemColorActiveHover: dark
-        ? "rgba(10, 132, 255, 0.3)"
-        : "rgba(0, 122, 255, 0.2)",
+        ? "rgba(191, 90, 242, 0.32)"
+        : "rgba(175, 82, 222, 0.22)",
       itemTextColor: dark ? "rgba(235, 235, 245, 0.85)" : "rgba(0, 0, 0, 0.85)",
       itemTextColorHover: dark ? "#FFFFFF" : "#000000",
-      itemTextColorActive: dark ? "#409CFF" : "#007AFF",
+      itemTextColorActive: dark ? "#D39BF5" : "#AF52DE",
     },
 
     Message: {

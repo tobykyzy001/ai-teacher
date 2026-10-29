@@ -729,6 +729,7 @@ pub fn get_book_detail_impl(db: &Db, book_id: i64) -> Result<BookDetail, String>
             added_at: book.added_at,
             total_units: units.len() as i64,
             done_units: done,
+            cover_path: None,
         },
         units,
         chapters,
@@ -913,7 +914,16 @@ pub fn import_book(state: State<'_, AppState>, path: String) -> Result<BookSumma
 
 #[tauri::command]
 pub fn list_books(state: State<'_, AppState>) -> Result<Vec<BookSummary>, String> {
-    state.db.list_books().map_err(|e| e.to_string())
+    let mut books = state.db.list_books().map_err(|e| e.to_string())?;
+    // 封面不入库：按约定查 books/<id>/cover.*，FASTPATH 直接返回；
+    // EPUB 老书首次列到书架时从源文件当场提取补建。
+    for b in &mut books {
+        if let Ok(Some(src)) = state.db.book_source_path(b.id) {
+            let src_path = resolve_data_path(&state.db, &src);
+            b.cover_path = ingest::ensure_book_cover(&state.app_data_dir, b.id, &src_path, &b.format);
+        }
+    }
+    Ok(books)
 }
 
 #[tauri::command]
@@ -923,7 +933,17 @@ pub fn remove_book(state: State<'_, AppState>, book_id: i64) -> Result<(), Strin
 
 #[tauri::command]
 pub fn get_book_detail(state: State<'_, AppState>, book_id: i64) -> Result<BookDetail, String> {
-    get_book_detail_impl(&state.db, book_id)
+    let mut detail = get_book_detail_impl(&state.db, book_id)?;
+    if let Ok(Some(src)) = state.db.book_source_path(book_id) {
+        let src_path = resolve_data_path(&state.db, &src);
+        detail.book.cover_path = ingest::ensure_book_cover(
+            &state.app_data_dir,
+            book_id,
+            &src_path,
+            &detail.book.format,
+        );
+    }
+    Ok(detail)
 }
 
 #[tauri::command]

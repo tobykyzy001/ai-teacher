@@ -22,6 +22,7 @@ export interface BookSummary {
   added_at: string; // ISO date
   total_units: number;
   done_units: number;
+  cover_path?: string | null; // EPUB 内嵌封面提取到 books/<id>/cover.* 的绝对路径
 }
 
 export type UnitStatus = "unread" | "reading" | "done" | "skipped";

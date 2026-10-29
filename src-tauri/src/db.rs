@@ -297,6 +297,18 @@ impl Db {
         })
     }
 
+    pub fn book_source_path(&self, id: i64) -> Result<Option<String>, DbError> {
+        self.with_conn(|c| {
+            c.query_row(
+                "SELECT source_path FROM books WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+    }
+
     pub fn list_books(&self) -> Result<Vec<BookSummary>, DbError> {
         self.with_conn(|c| {
             let mut stmt = c.prepare(
@@ -313,6 +325,7 @@ impl Db {
                     added_at: row.get(3)?,
                     total_units: row.get(4)?,
                     done_units: row.get(5)?,
+                    cover_path: None,
                 })
             })?;
             rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
