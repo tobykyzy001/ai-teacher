@@ -23,11 +23,11 @@ export const appleTheme: GlobalThemeOverrides = {
     infoColor: "#007AFF",
     infoColorHover: "#3391FF",
     infoColorPressed: "#0062CC",
-    warningColor: "#E8A33D",
-    warningColorHover: "#EDB055",
-    warningColorPressed: "#D08F2B",
-    errorColor: "#D03050",
-    errorColorHover: "#D84B65",
+    warningColor: "#FF9500",
+    warningColorHover: "#FFB340",
+    warningColorPressed: "#D07E00",
+    errorColor: "#FF3B30",
+    errorColorHover: "#FF4A3F",
     errorColorPressed: "#B42545",
 
     // —— 文字（透明灰，Apple 的层级）

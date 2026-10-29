@@ -38,6 +38,18 @@
   --space-xl: 24px;
   --space-2xl: 32px;
 
+  /* Apple 文本尺度（SF Pro 节奏，逐步接管硬编码字号）与 iOS 语义色 */
+  --text-title-xxl: 34px;
+  --text-title-xl: 28px;
+  --text-title-l: 22px;
+  --text-body: 17px;
+  --text-sub: 15px;
+  --text-foot: 13px;
+  --text-cap: 11px;
+  --sys-success: #34C759;
+  --sys-warning: #FF9500;
+  --sys-error: #FF3B30;
+
   /* 强调色（保留现有 Naive UI 的绿色仍是正确的，做了一点提亮） */
   --color-accent: #007AFF;
   --color-accent-info: #0A84FF;
@@ -188,6 +200,17 @@ h6 {
 
 /* 手机：标题区竖排、字号收紧（App.vue 约定 ≤820px 为移动端断点） */
 @media (max-width: 820px) {
+  body {
+    font-size: 17px;
+    line-height: 1.47;
+  }
+
+  .page-title {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+
   .page-header {
     flex-direction: column;
     gap: 10px;
@@ -372,10 +395,6 @@ h6 {
   .page-header {
     flex-direction: column;
     gap: 10px;
-  }
-
-  .page-title {
-    font-size: 22px;
   }
 
   .center-box {

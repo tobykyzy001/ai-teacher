@@ -401,7 +401,7 @@ watch(
 }
 
 .main.mobile {
-  padding: 14px 14px;
+  padding: 16px 16px;
   padding-bottom: calc(86px + env(safe-area-inset-bottom, 0px));
 }
 
@@ -472,8 +472,8 @@ watch(
 
 .tab-bar {
   position: fixed;
-  left: 14px;
-  right: 14px;
+  left: 16px;
+  right: 16px;
   bottom: calc(12px + env(safe-area-inset-bottom, 0px));
   z-index: 100;
   display: flex;
