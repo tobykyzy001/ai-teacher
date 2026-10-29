@@ -1126,11 +1126,24 @@ function renderMarkdown(src: string): string {
   overscroll-behavior: contain;
 }
 
-/* 正文内容居中并给左右各留 48px 空白放箭头；滚动条仍在外层 .main-col 的边缘 */
+/* 正文内容居中并给左右各留 48px 空白放箭头；滚动条仍在外层 .main-col 的边缘
+   限宽随屏宽放阶梯：普通屏 980（原节奏）→ 宽屏放量，杜绝两侧大沙漠 */
 .read-col {
   max-width: 980px;
   margin: 0 auto;
   padding: 0 48px 48px;
+}
+
+@media (min-width: 1500px) {
+  .read-col {
+    max-width: 1200px;
+  }
+}
+
+@media (min-width: 2000px) {
+  .read-col {
+    max-width: 1440px;
+  }
 }
 
 /* 翻章箭头：悬浮小圆钮，钉在视口中线（无论正文多长都不随滚动跑），悬停变绿 */
