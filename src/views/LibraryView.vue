@@ -34,9 +34,18 @@
         class="book-tile"
         @click="openBook(book)"
       >
-        <div class="cover" :style="coverStyle(book.title)">
-          <span class="cover-title">{{ book.title }}</span>
-          <span class="cover-format">{{ book.format.toUpperCase() }}</span>
+        <div class="cover" :style="book.cover_path ? {} : coverStyle(book.title)">
+          <img
+            v-if="book.cover_path"
+            class="cover-img"
+            :src="coverSrc(book.cover_path)"
+            :alt="book.title"
+            @error="onCoverError(book)"
+          />
+          <template v-else>
+            <span class="cover-title">{{ book.title }}</span>
+            <span class="cover-format">{{ book.format.toUpperCase() }}</span>
+          </template>
           <n-button class="cover-close" quaternary title="删除" @click.stop="askRemove(book)">
             <n-icon :size="13"><Close /></n-icon>
           </n-button>
@@ -71,6 +80,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Close } from "@vicons/ionicons5";
 import {
@@ -116,6 +126,15 @@ function coverStyle(title: string): Record<string, string> {
   }
   const [a, b] = COVER_PALETTES[h % COVER_PALETTES.length];
   return { backgroundImage: `linear-gradient(150deg, ${a}, ${b})` };
+}
+
+// EPUB 内嵌封面走 asset 协议原图展示；加载失败回退哈希渐变大字封面
+function coverSrc(path: string): string {
+  return convertFileSrc(path);
+}
+
+function onCoverError(book: BookSummary): void {
+  book.cover_path = undefined;
 }
 
 async function refresh(force = false): Promise<void> {
@@ -187,13 +206,13 @@ async function doRemove(): Promise<void> {
 .book-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
-  gap: 20px 14px;
+  gap: var(--space-5) var(--space-4);
 }
 
 @media (min-width: 821px) {
   .book-grid {
     grid-template-columns: repeat(auto-fill, minmax(184px, 1fr));
-    gap: 24px 18px;
+    gap: var(--space-6) var(--space-5);
   }
 }
 
@@ -205,16 +224,25 @@ async function doRemove(): Promise<void> {
 .cover {
   position: relative;
   aspect-ratio: 2 / 3;
-  border-radius: 8px;
+  border-radius: var(--radius-card);
   overflow: hidden;
   box-shadow:
     inset 0 0 0 0.5px rgba(255, 255, 255, 0.18),
-    0 6px 18px rgba(15, 35, 60, 0.14);
-  transition: transform 0.12s ease-out;
+    0 6px 18px rgba(0, 0, 0, 0.14);
+  transition: transform var(--dur-fast) var(--spring);
 }
 
 .book-tile:active .cover {
   transform: scale(0.97);
+}
+
+/* EPUB 真封面：等比铺满 2:3 书型，书脊暗纹 (::before) 保留在外层 */
+.cover-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .cover::before {
@@ -237,7 +265,7 @@ async function doRemove(): Promise<void> {
   right: 12px;
   top: 14px;
   color: rgba(255, 255, 255, 0.95);
-  font-size: 15px;
+  font-size: var(--text-subhead);
   font-weight: 600;
   line-height: 1.45;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
@@ -251,7 +279,7 @@ async function doRemove(): Promise<void> {
   position: absolute;
   left: 24px;
   bottom: 12px;
-  font-size: 11px;
+  font-size: var(--text-caption2);
   letter-spacing: 0.08em;
   color: rgba(255, 255, 255, 0.72);
 }
@@ -271,7 +299,7 @@ async function doRemove(): Promise<void> {
 .tile-progress {
   height: 3px;
   border-radius: 2px;
-  background: rgba(0, 0, 0, 0.08);
+  background: var(--fill-3);
   margin: 12px 2px 5px;
   overflow: hidden;
 }
@@ -279,8 +307,8 @@ async function doRemove(): Promise<void> {
 .tile-progress-fill {
   height: 100%;
   border-radius: 2px;
-  background: var(--color-accent);
-  transition: width 0.3s ease;
+  background: var(--accent);
+  transition: width var(--dur) var(--spring);
 }
 
 .tile-count {

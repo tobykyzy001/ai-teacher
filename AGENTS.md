@@ -73,4 +73,5 @@ fixtures/demo-book.md # 端到端与测试用的示例书（3 章）
 - 错题状态无独立字段：从 attempts 按题最近一次记录派生（有答错记录即入错题本，最近答对即"已解决"），重练直接复用 `submit_answer`
 - 今日统计源自 `learning_log`（一行一事件：答题记 'answer'、复习记 'review'）：今日已复习 x/y = 今日复习数 /（今日复习数+剩余到期数），连续天数从今天（无记录则昨天）往回数
 - 前端输入+按钮的统一模式（勿回退）：提交/提问按钮不写 `:disabled="!x.trim()"` 锁空值，改绑 `@mousedown="commitComposingInput"`（utils.ts）+ 点击时空值 `message.warning`——中文输入法组词期间 naive-ui 不更新 v-model（`handleInput` 里 isComposing 直接 return），按钮若因旧值禁用，第一次点击只被用来上屏组词、事件被吞，必须点两次；回车提交用 `@keydown.enter` 且过滤 `isComposing || keyCode === 229`（候选词确认的回车不算提交）
+- 设计令牌单一来源（严格态 Apple HIG + Liquid Glass，勿回退凭感觉）：`src/style.css` 顶部 `:root` 是全部色/字/距/圆角/动效令牌（Apple text styles 34→11、8pt 栅格、同心圆角、iOS 语义动态色 light/dark 双套），`src/theme.ts` 的 `appleThemeLight/Dark` 与之一一对应、暗色走 naive `darkTheme` 随 `prefers-color-scheme` 切换；视图样式一律用变量，禁止硬编码色值/字号/圆角/间距。Liquid Glass 只允许功能层（侧栏/Tab/悬浮钮/浮层/底部 sheet），内容层（卡片/列表/正文）禁止玻璃与投影（HIG Materials 原文 "Don't use Liquid Glass in the content layer"）；accent 只给主要操作/选中态/可交互元素
 - 业务规则集中且要测：写测试走 `*_impl` + 内存 DB + mock LLM，不依赖 Tauri 运行时和网络

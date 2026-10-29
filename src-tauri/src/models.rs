@@ -95,6 +95,9 @@ pub struct BookSummary {
     pub added_at: String,
     pub total_units: i64,
     pub done_units: i64,
+    /// EPUB 内嵌封面提取到 books/<id>/cover.* 的绝对路径；无封面（PDF/MD/TXT）为 None
+    #[serde(default)]
+    pub cover_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

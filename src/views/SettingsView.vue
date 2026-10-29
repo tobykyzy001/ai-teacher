@@ -190,15 +190,15 @@ async function onTest(): Promise<void> {
 
 <style scoped>
 .tip {
-  margin-bottom: 16px;
+  margin-bottom: var(--space-4);
 }
 
 .test-result {
-  margin-top: 16px;
+  margin-top: var(--space-4);
 }
 
 .about-card {
-  margin-top: 16px;
+  margin-top: var(--space-4);
 }
 
 .about-card .small {
@@ -208,39 +208,40 @@ async function onTest(): Promise<void> {
 .switch-row {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
+  gap: var(--space-3);
+  min-height: var(--hit);
 }
 
 .switch-row + .switch-row {
-  margin-top: 14px;
+  margin-top: var(--space-3);
 }
 
 .save-behavior {
-  margin-top: 12px;
+  margin-top: var(--space-3);
 }
 
 .app-identity {
-  padding-bottom: 16px;
-  margin-bottom: 16px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.09);
+  padding-bottom: var(--space-4);
+  margin-bottom: var(--space-4);
+  border-bottom: 0.5px solid var(--separator);
 }
 
 .app-name {
-  font-size: 22px;
+  font-size: var(--text-title2);
   font-weight: 700;
   letter-spacing: -0.01em;
-  color: rgba(0, 0, 0, 0.87);
-  margin-bottom: 4px;
+  color: var(--label);
+  margin-bottom: var(--space-1);
 }
 
 .about-section + .about-section {
-  margin-top: 14px;
+  margin-top: var(--space-3);
 }
 
 .about-label {
-  font-size: 13px;
+  font-size: var(--text-footnote);
   font-weight: 600;
-  color: rgba(0, 0, 0, 0.87);
-  margin-bottom: 4px;
+  color: var(--label);
+  margin-bottom: var(--space-1);
 }
 </style>

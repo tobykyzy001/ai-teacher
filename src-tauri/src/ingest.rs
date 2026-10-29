@@ -699,6 +699,10 @@ struct OpfData {
     spine: Vec<String>,
     toc_id: Option<String>,
     nav_href: Option<String>,
+    /// EPUB2：`<meta name="cover" content="manifest-item-id"/>`
+    cover_meta_id: Option<String>,
+    /// EPUB3：manifest item properties 含 cover-image
+    cover_href: Option<String>,
 }
 
 fn parse_opf(xml: &str) -> OpfData {
@@ -707,6 +711,8 @@ fn parse_opf(xml: &str) -> OpfData {
         spine: Vec::new(),
         toc_id: None,
         nav_href: None,
+        cover_meta_id: None,
+        cover_href: None,
     };
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -715,6 +721,7 @@ fn parse_opf(xml: &str) -> OpfData {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => match local_name(e.name().as_ref()) {
+                b"metadata" => section = "metadata".to_string(),
                 b"manifest" => section = "manifest".to_string(),
                 b"spine" => {
                     section = "spine".to_string();
@@ -740,6 +747,7 @@ fn parse_opf(xml: &str) -> OpfData {
             },
             Ok(Event::Empty(e)) => match local_name(e.name().as_ref()) {
                 b"item" if section == "manifest" => collect_manifest_item(&e, &mut data),
+                b"meta" if section == "metadata" => collect_cover_meta(&e, &mut data),
                 b"itemref" if section == "spine" => {
                     for attr in e.attributes().flatten() {
                         if local_name(attr.key.as_ref()) == b"idref" {
@@ -752,7 +760,7 @@ fn parse_opf(xml: &str) -> OpfData {
                 _ => {}
             },
             Ok(Event::End(e)) => match local_name(e.name().as_ref()) {
-                b"manifest" | b"spine" => section.clear(),
+                b"metadata" | b"manifest" | b"spine" => section.clear(),
                 _ => {}
             },
             Ok(Event::Eof) => break,
@@ -762,6 +770,26 @@ fn parse_opf(xml: &str) -> OpfData {
         buf.clear();
     }
     data
+}
+
+fn collect_cover_meta(e: &quick_xml::events::BytesStart<'_>, data: &mut OpfData) {
+    let mut name = String::new();
+    let mut content = String::new();
+    for attr in e.attributes().flatten() {
+        match local_name(attr.key.as_ref()) {
+            b"name" => name = attr.unescape_value().map(|v| v.into_owned()).unwrap_or_default(),
+            b"content" => {
+                content = attr
+                    .unescape_value()
+                    .map(|v| v.into_owned())
+                    .unwrap_or_default()
+            }
+            _ => {}
+        }
+    }
+    if name.eq_ignore_ascii_case("cover") && !content.is_empty() {
+        data.cover_meta_id = Some(content);
+    }
 }
 
 fn collect_manifest_item(e: &quick_xml::events::BytesStart<'_>, data: &mut OpfData) {
@@ -788,8 +816,78 @@ fn collect_manifest_item(e: &quick_xml::events::BytesStart<'_>, data: &mut OpfDa
         {
             data.nav_href = Some(href.clone());
         }
+        if properties
+            .split_whitespace()
+            .any(|p| p.eq_ignore_ascii_case("cover-image"))
+        {
+            data.cover_href = Some(href.clone());
+        }
         data.manifest.insert(id, href);
     }
+}
+
+/// 提取 EPUB 内嵌封面：EPUB3 properties="cover-image" 优先，EPUB2 meta cover 其次。
+/// 返回 (落盘文件名 cover.<ext>, 图片字节)；无封面返回 None。
+pub fn extract_epub_cover(bytes: &[u8]) -> Option<(String, Vec<u8>)> {
+    let mut zip = ZipArchive::new(Cursor::new(bytes)).ok()?;
+    let container = read_zip_text(&mut zip, "META-INF/container.xml")?;
+    let opf_path = parse_container(&container)?;
+    let opf_dir = parent_dir(&opf_path);
+    let opf = read_zip_text(&mut zip, &opf_path)?;
+    let opf_data = parse_opf(&opf);
+    let href = opf_data.cover_href.or_else(|| {
+        opf_data
+            .cover_meta_id
+            .as_ref()
+            .and_then(|id| opf_data.manifest.get(id).cloned())
+    })?;
+    let zip_path = resolve_href(&opf_dir, &href);
+    let data = read_zip_bytes(&mut zip, &zip_path)?;
+    let ext = match href.rsplit('.').next().unwrap_or("").to_lowercase().as_str() {
+        "jpg" | "jpeg" => "jpg",
+        "png" => "png",
+        "webp" => "webp",
+        "gif" => "gif",
+        // 扩展名不可信时按魔数嗅探
+        _ if data.starts_with(b"\xff\xd8") => "jpg",
+        _ if data.starts_with(b"\x89PNG") => "png",
+        _ if data.starts_with(b"RIFF") => "webp",
+        _ if data.starts_with(b"GIF8") => "gif",
+        _ => "jpg",
+    };
+    Some((format!("cover.{ext}"), data))
+}
+
+/// 封面约定：books/<id>/cover.<ext> 直接落书目录，不入库（不加列），
+/// 前端按 BookSummary.cover_path 渲染，iOS 容器 UUID 变更不受影响。
+fn write_cover_if_any(book_dir: &Path, source_file: &Path, format: &str) -> Option<String> {
+    if format != "epub" {
+        return None;
+    }
+    let bytes = std::fs::read(source_file).ok()?;
+    let (name, data) = extract_epub_cover(&bytes)?;
+    let dest = book_dir.join(&name);
+    std::fs::write(&dest, data).ok()?;
+    Some(dest.to_string_lossy().into_owned())
+}
+
+/// 列出书籍时的封面补建：已有 cover.* 直接回；EPUB 且源文件在则当场提取。
+pub fn ensure_book_cover(
+    app_data_dir: &Path,
+    book_id: i64,
+    source_path: &Path,
+    format: &str,
+) -> Option<String> {
+    let book_dir = app_data_dir.join("books").join(book_id.to_string());
+    if let Ok(entries) = std::fs::read_dir(&book_dir) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with("cover.") {
+                return Some(e.path().to_string_lossy().into_owned());
+            }
+        }
+    }
+    write_cover_if_any(&book_dir, source_path, format)
 }
 
 /// 记录一个目录条目：扁平标题表 + 大节（顶层条目）映射；同一路径只取首次出现。
@@ -1494,6 +1592,9 @@ pub fn import_book(db: &Db, app_data_dir: &Path, path: &str) -> Result<BookSumma
         }
     }
 
+    // EPUB 内嵌封面提取到 books/<id>/cover.<ext>（无封面的格式静默跳过）
+    let cover_path = write_cover_if_any(&book_dir, file_path, format);
+
     Ok(BookSummary {
         id: book_id,
         title,
@@ -1501,6 +1602,7 @@ pub fn import_book(db: &Db, app_data_dir: &Path, path: &str) -> Result<BookSumma
         added_at,
         total_units: units.len() as i64,
         done_units: 0,
+        cover_path,
     })
 }
 
@@ -2011,6 +2113,95 @@ mod tests {
         )
         .unwrap();
         assert!(unit_text.contains(&format!("]({name})")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn make_epub_with_cover(opf: &str) -> Vec<u8> {
+        let mut files: Vec<(&str, &[u8])> = vec![
+            ("META-INF/container.xml", CONTAINER_XML.as_bytes()),
+            ("OEBPS/content.opf", opf.as_bytes()),
+        ];
+        let page = xhtml("正文", &["第一章的正文第一段，讲述起点。"]);
+        let page_bytes = page.as_bytes().to_vec();
+        let png = b"\x89PNG-cover-fake".to_vec();
+        files.push(("OEBPS/text/a1.xhtml", &page_bytes));
+        files.push(("OEBPS/pics/cover.png", &png));
+        let mut cur = Cursor::new(Vec::new());
+        {
+            let mut w = zip::write::ZipWriter::new(&mut cur);
+            let opt = zip::write::SimpleFileOptions::default();
+            for (n, c) in &files {
+                w.start_file(*n, opt).unwrap();
+                std::io::Write::write_all(&mut w, c).unwrap();
+            }
+            w.finish().unwrap();
+        }
+        cur.into_inner()
+    }
+
+    const OPF_COVER_EPUB2: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf" unique-identifier="id">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>封面书</dc:title>
+    <meta name="cover" content="cv"/>
+  </metadata>
+  <manifest>
+    <item id="c1" href="text/a1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="cv" href="pics/cover.png" media-type="image/png"/>
+  </manifest>
+  <spine><itemref idref="c1"/></spine>
+</package>"#;
+
+    const OPF_COVER_EPUB3: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="3.0" xmlns="http://www.idpf.org/2007/opf" unique-identifier="id">
+  <metadata><dc:title xmlns:dc="http://nope">封面书</dc:title></metadata>
+  <manifest>
+    <item id="c1" href="text/a1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="cv3" href="pics/cover.png" media-type="image/png" properties="cover-image"/>
+  </manifest>
+  <spine><itemref idref="c1"/></spine>
+</package>"#;
+
+    #[test]
+    fn epub_cover_extracted_epub2_meta_and_epub3_properties() {
+        for opf in [OPF_COVER_EPUB2, OPF_COVER_EPUB3] {
+            let bytes = make_epub_with_cover(opf);
+            let (name, data) = extract_epub_cover(&bytes).expect("应提取到封面");
+            assert_eq!(name, "cover.png");
+            assert_eq!(data, b"\x89PNG-cover-fake");
+        }
+        // 无封面声明的书静默返回 None
+        let no_cover = OPF_COVER_EPUB3
+            .replace(r#" properties="cover-image""#, "")
+            .replace(r#"<item id="cv3" href="pics/cover.png" media-type="image/png"/>"#, "");
+        assert!(extract_epub_cover(&make_epub_with_cover(&no_cover)).is_none());
+    }
+
+    #[test]
+    fn import_epub_persists_cover_and_ensure_backfills() {
+        let dir = temp_dir("cover-import");
+        let db = Db::open_in_memory().unwrap();
+        let epub_path = dir.join("with-cover.epub");
+        std::fs::write(&epub_path, make_epub_with_cover(OPF_COVER_EPUB2)).unwrap();
+        let summary = import_book(&db, &dir, epub_path.to_string_lossy().as_ref()).unwrap();
+        let cover = summary.cover_path.expect("导入后应有封面路径");
+        let cover_file = dir
+            .join("books")
+            .join(summary.id.to_string())
+            .join("cover.png");
+        assert!(cover_file.exists());
+        assert_eq!(cover, cover_file.to_string_lossy());
+        // 删掉后 ensure 按源文件（books/<id>/ 内自包含副本）补建
+        std::fs::remove_file(&cover_file).unwrap();
+        let src = dir
+            .join("books")
+            .join(summary.id.to_string())
+            .join("with-cover.epub");
+        let rebuilt = ensure_book_cover(&dir, summary.id, &src, "epub").expect("应补建封面");
+        assert_eq!(rebuilt, cover_file.to_string_lossy());
+        // 已有封面时直接命中 FASTPATH，不重提取
+        let again = ensure_book_cover(&dir, summary.id, Path::new("/nonexistent"), "epub");
+        assert_eq!(again, Some(cover_file.to_string_lossy().into_owned()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

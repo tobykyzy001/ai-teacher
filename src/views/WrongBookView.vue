@@ -308,9 +308,9 @@ watch(practiceShow, (show) => {
 .filter-bar {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   flex-wrap: wrap;
-  margin-bottom: 16px;
+  margin-bottom: var(--space-4);
 }
 
 .filter-select {
@@ -333,7 +333,7 @@ watch(practiceShow, (show) => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-4);
 }
 
 .row-main {
@@ -346,10 +346,10 @@ watch(practiceShow, (show) => {
 }
 
 .stem {
-  font-size: 15px;
+  font-size: var(--text-subhead);
   font-weight: 500;
   line-height: 1.6;
-  margin-bottom: 8px;
+  margin-bottom: var(--space-2);
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -369,14 +369,14 @@ watch(practiceShow, (show) => {
 }
 
 .kp-line {
-  margin-bottom: 12px;
+  margin-bottom: var(--space-3);
 }
 
 .q-stem {
-  font-size: 16px;
+  font-size: var(--text-callout);
   font-weight: 600;
   line-height: 1.7;
-  margin-bottom: 16px;
+  margin-bottom: var(--space-4);
   white-space: pre-wrap;
 }
 
@@ -387,7 +387,7 @@ watch(practiceShow, (show) => {
 }
 
 .q-result {
-  margin-top: 16px;
+  margin-top: var(--space-4);
 }
 
 .q-line {
@@ -401,7 +401,7 @@ watch(practiceShow, (show) => {
 .practice-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 12px;
-  margin-top: 20px;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
 }
 </style>
