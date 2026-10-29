@@ -1163,12 +1163,12 @@ function renderMarkdown(src: string): string {
   line-height: 1;
   /* 背景透明时 iOS 原生控件会画成方块，必须给底色 */
   color: var(--label-2);
-  background: var(--glass-bg);
+  background: var(--glass-sheen), var(--glass-bg);
   -webkit-backdrop-filter: blur(20px) saturate(170%);
   backdrop-filter: blur(20px) saturate(170%);
-  border: 0.5px solid var(--glass-stroke);
+  border: none;
   box-shadow:
-    var(--glass-highlight),
+    var(--glass-rim),
     0 1px 6px rgba(0, 0, 0, 0.1);
   outline: none;
   opacity: 1;
@@ -1214,11 +1214,12 @@ function renderMarkdown(src: string): string {
   gap: 14px;
   padding: 10px 12px;
   margin-bottom: var(--space-4);
-  background: var(--glass-bg);
+  background: var(--glass-sheen), var(--glass-bg);
   backdrop-filter: blur(20px) saturate(180%);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border: 0.5px solid var(--glass-stroke);
+  border: none;
   border-radius: var(--radius-card);
+  box-shadow: var(--glass-rim), var(--glass-drop);
 }
 
 .theme-group {
@@ -1371,6 +1372,31 @@ function renderMarkdown(src: string): string {
   cursor: pointer;
 }
 
+/* 手机端右下角 AI 悬浮钮（功能层 glass FAB，56px 大圆） */
+.ai-fab {
+  position: fixed;
+  right: var(--space-4);
+  bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+  z-index: 20;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: none;
+  background: var(--glass-sheen), var(--glass-bg);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-rim), var(--glass-drop);
+  color: var(--label);
+  font-size: var(--text-subhead);
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform var(--dur-fast) var(--spring);
+}
+
+.ai-fab:active {
+  transform: scale(0.94);
+}
+
 /* Aa 圆钮 / 返回钮：手机端阅读设置与退出入口（Apple Books 的阅读 chrome，功能层 glass） */
 .back-fab,
 .aa-fab {
@@ -1382,12 +1408,12 @@ function renderMarkdown(src: string): string {
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  border: 0.5px solid var(--glass-stroke);
-  background: var(--glass-bg);
+  border: none;
+  background: var(--glass-sheen), var(--glass-bg);
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
   box-shadow:
-    var(--glass-highlight),
+    var(--glass-rim),
     0 2px 8px rgba(0, 0, 0, 0.08);
   color: var(--label-2);
   font-size: var(--text-footnote);
@@ -1410,12 +1436,12 @@ function renderMarkdown(src: string): string {
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  border: 0.5px solid var(--glass-stroke);
-  background: var(--glass-bg);
+  border: none;
+  background: var(--glass-sheen), var(--glass-bg);
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
   box-shadow:
-    var(--glass-highlight),
+    var(--glass-rim),
     0 2px 8px rgba(0, 0, 0, 0.08);
   color: var(--label-2);
   font-size: 24px;

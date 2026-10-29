@@ -480,11 +480,11 @@ watch(
   align-items: stretch;
   border-radius: var(--radius-pill);
   overflow: hidden;
-  background: var(--glass-bg);
+  background: var(--glass-sheen), var(--glass-bg);
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
-  border: 0.5px solid var(--glass-stroke);
-  box-shadow: var(--glass-highlight), var(--shadow-float);
+  border: none;
+  box-shadow: var(--glass-rim), var(--glass-drop);
 }
 
 .tab-item {
