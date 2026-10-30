@@ -62,7 +62,7 @@
         <router-view />
       </n-layout-content>
       <!-- 收起/唤回共用一枚悬浮玻璃圆钮，沿侧栏边缘跟随平移（与 naive sider 同为 .3s 标准缓动）：
-           展开时骑缝贴在侧栏右缘（« 提示收起，右半落在内容 28px 左内边距的空白带、不压页面内容），
+           展开时骑缝贴在侧栏右缘（« 提示收起，右半落在内容 24px 左内边距的空白带、不压页面内容），
            收起时滑到左上角红绿灯下方（≡ 再唤出）；透明拖动层仅在收起态补上 logo 丢失的窗口拖动区，
            圆钮永远在其上方、且不嵌进 data-tauri-drag-region，避免点击与拖动相争 -->
       <div
@@ -74,7 +74,7 @@
         v-if="!isMobile && !isTablet"
         class="edge-fab"
         type="button"
-        :style="{ left: siderCollapsed ? '14px' : '164px' }"
+        :style="{ left: siderCollapsed ? '14px' : '204px' }"
         :title="siderCollapsed ? '展开菜单栏' : '收起菜单栏'"
         :aria-label="siderCollapsed ? '展开菜单栏' : '收起菜单栏'"
         @click="setSiderHidden(!siderHidden)"
@@ -434,13 +434,13 @@ watch(
   align-items: center;
   justify-content: center;
   line-height: 1;
-  color: #6b7280;
-  background: rgba(255, 255, 255, 0.55);
+  color: var(--label-2);
+  background: var(--glass-sheen), var(--glass-bg);
   -webkit-backdrop-filter: blur(20px) saturate(170%);
   backdrop-filter: blur(20px) saturate(170%);
-  border: 0.5px solid rgba(255, 255, 255, 0.55);
+  border: none;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    var(--glass-rim),
     0 1px 6px rgba(0, 0, 0, 0.1);
   outline: none;
   cursor: pointer;
@@ -453,8 +453,7 @@ watch(
 
 .edge-fab:hover,
 .edge-fab:focus-visible {
-  color: var(--color-accent);
-  background: #fff;
+  color: var(--accent);
 }
 
 /* 收起态 logo 拖动区随侧栏一并消失：左上角垫一块透明拖动层补回窗口拖动能力，
@@ -463,7 +462,7 @@ watch(
   position: fixed;
   top: 0;
   left: 0;
-  width: 180px;
+  width: 220px;
   height: 64px;
   z-index: 790;
 }
