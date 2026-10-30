@@ -5,7 +5,11 @@
       <n-layout-sider
         v-if="!isMobile && !isTablet"
         :width="180"
+        collapse-mode="width"
+        :collapsed-width="0"
+        :collapsed="siderHidden"
         class="app-sider"
+        :class="{ collapsed: siderHidden }"
       >
         <div class="logo" data-tauri-drag-region>AI 伴读</div>
         <n-menu
@@ -46,10 +50,49 @@
       <n-layout-content
         ref="mainRef"
         class="main"
-        :class="{ mobile: isMobile, reading: isReadingRoute }"
+        :class="{
+          mobile: isMobile,
+          reading: isReadingRoute,
+          'sider-collapsed': siderCollapsed,
+        }"
       >
         <router-view />
       </n-layout-content>
+      <!-- 收起/唤回共用一枚悬浮玻璃圆钮，沿侧栏边缘跟随平移（与 naive sider 同为 .3s 标准缓动）：
+           展开时骑缝贴在侧栏右缘（« 提示收起，右半落在内容 28px 左内边距的空白带、不压页面内容），
+           收起时滑到左上角红绿灯下方（≡ 再唤出）；透明拖动层仅在收起态补上 logo 丢失的窗口拖动区，
+           圆钮永远在其上方、且不嵌进 data-tauri-drag-region，避免点击与拖动相争 -->
+      <div
+        v-if="siderCollapsed"
+        class="corner-dock-drag"
+        data-tauri-drag-region
+      ></div>
+      <button
+        v-if="!isMobile && !isTablet"
+        class="edge-fab"
+        type="button"
+        :style="{ left: siderCollapsed ? '14px' : '164px' }"
+        :title="siderCollapsed ? '展开菜单栏' : '收起菜单栏'"
+        :aria-label="siderCollapsed ? '展开菜单栏' : '收起菜单栏'"
+        @click="setSiderHidden(!siderHidden)"
+      >
+        <n-icon v-if="siderCollapsed" :size="18"><MenuOutline /></n-icon>
+        <svg
+          v-else
+          viewBox="0 0 24 24"
+          width="19"
+          height="19"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <polyline points="11,6 5,12 11,18" />
+          <polyline points="17,6 11,12 17,18" />
+        </svg>
+      </button>
       <nav v-if="isMobile && !isReadingRoute" class="tab-bar">
         <button
           v-for="item in menuOptions"
@@ -87,6 +130,7 @@ import {
   ArrowRedoCircleOutline,
   BookOutline,
   CalendarOutline,
+  MenuOutline,
   SettingsOutline,
 } from "@vicons/ionicons5";
 import {
@@ -188,6 +232,32 @@ function goContinueReading(): void {
   if (lastReading.value) router.push(lastReading.value);
 }
 
+// 侧栏收起（仅宽屏布局生效；平板图标栏/手机 Tab 栏本就紧凑，不做收起）：状态本地记忆，重开应用保持
+const SIDER_HIDDEN_KEY = "ai-teacher:sider-hidden";
+
+function loadSiderHidden(): boolean {
+  try {
+    return localStorage.getItem(SIDER_HIDDEN_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+const siderHidden = ref(loadSiderHidden());
+
+function setSiderHidden(v: boolean): void {
+  siderHidden.value = v;
+  try {
+    localStorage.setItem(SIDER_HIDDEN_KEY, v ? "1" : "0");
+  } catch {
+    /* 本地存储不可用时仅本次运行内记忆 */
+  }
+}
+
+const siderCollapsed = computed(
+  () => siderHidden.value && !isMobile.value && !isTablet.value,
+);
+
 // 换页时把主内容区滚回顶部：滚动容器 .main 为所有页面共享，长页滚到底再进短页时
 // 旧滚动位置会把新页内容顶出视口（表现为"点去做题白屏"）
 const mainRef = ref<InstanceType<typeof NLayoutContent> | null>(null);
@@ -206,6 +276,11 @@ watch(
 .app-sider {
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border-subtle);
+}
+
+/* 收起到 0 宽后侧栏只剩这条边框线，一并隐去 */
+.app-sider.collapsed {
+  border-right-color: transparent;
 }
 
 .app-sider :deep(.n-layout-sider__content) {
@@ -321,6 +396,8 @@ watch(
   padding: 24px 28px;
   overflow: auto;
   background: var(--bg-content);
+  /* 与侧栏收起动画（naive sider 宽度过渡 .3s）同步的顶部避让过渡 */
+  transition: padding-top 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .main.mobile {
@@ -331,6 +408,64 @@ watch(
 /* 阅读页全屏：Tab 栏收起后不再预留其占位 */
 .main.mobile.reading {
   padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+}
+
+/* ---------- 侧栏收起态：骑缝唤回钮 + 顶部避让 ---------- */
+
+/* macOS Overlay 标题栏的红绿灯原本压在侧栏 logo 区上；侧栏收起后内容占满全宽，
+   顶部留一条空带让红绿灯与唤回圆钮（底缘 y=60）都落在空白处、不压页面标题；
+   阅读页的内层容器另有自身内边距，同样被这条规则罩住 */
+.main.sider-collapsed:not(.mobile) {
+  padding-top: 64px;
+}
+
+/* 收起/唤回共用圆钮：复用阅读页 .side-arrow 的液态玻璃配方；固定 y=28 只做水平
+   平移，left 与 naive sider 同为 .3s/标准缓动——全程以约 30px 的偏移贴着收放方向
+   的侧栏缝滑动，视觉上随即跟着它走 */
+.edge-fab {
+  position: fixed;
+  top: 28px;
+  /* 高于阅读页悬浮箭头(20)/点按区(10)，低于划词弹窗(1000)与 naive 模态 */
+  z-index: 800;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  color: #6b7280;
+  background: rgba(255, 255, 255, 0.55);
+  -webkit-backdrop-filter: blur(20px) saturate(170%);
+  backdrop-filter: blur(20px) saturate(170%);
+  border: 0.5px solid rgba(255, 255, 255, 0.55);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 1px 6px rgba(0, 0, 0, 0.1);
+  outline: none;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    left 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    background 0.15s,
+    color 0.15s;
+}
+
+.edge-fab:hover,
+.edge-fab:focus-visible {
+  color: var(--color-accent);
+  background: #fff;
+}
+
+/* 收起态 logo 拖动区随侧栏一并消失：左上角垫一块透明拖动层补回窗口拖动能力，
+   z 序压过页面内容但低于唤回圆钮(800) */
+.corner-dock-drag {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 180px;
+  height: 64px;
+  z-index: 790;
 }
 
 /* ---------- 手机端 Tab 栏 ---------- */
@@ -457,6 +592,15 @@ watch(
   .main:has(.reading-page) .reading-page {
     display: block;
     padding-bottom: 48px;
+  }
+}
+
+/* 减弱动态偏好：收起/展开改为瞬时切换（naive sider 的宽度过渡与唤回钮平移一并关掉） */
+@media (prefers-reduced-motion: reduce) {
+  .main,
+  .app-sider,
+  .edge-fab {
+    transition: none !important;
   }
 }
 </style>
