@@ -1,10 +1,13 @@
 <template>
-  <n-config-provider :theme-overrides="appleTheme">
+  <n-config-provider
+    :theme="isDark ? darkTheme : null"
+    :theme-overrides="isDark ? appleThemeDark : appleThemeLight"
+  >
     <n-message-provider>
       <n-layout has-sider style="height: 100vh">
       <n-layout-sider
         v-if="!isMobile && !isTablet"
-        :width="180"
+        :width="220"
         class="app-sider"
       >
         <div class="logo" data-tauri-drag-region>AI 伴读</div>
@@ -90,6 +93,7 @@ import {
   SettingsOutline,
 } from "@vicons/ionicons5";
 import {
+  darkTheme,
   NButton,
   NConfigProvider,
   NIcon,
@@ -100,7 +104,14 @@ import {
   NMessageProvider,
 } from "naive-ui";
 import { h, type Component } from "vue";
-import { appleTheme } from "./theme";
+import { appleThemeDark, appleThemeLight } from "./theme";
+
+// 跟随系统明暗（HIG Dark Mode：所有颜色提供 light/dark 双值，随外观自动切换）
+const darkMedia = window.matchMedia("(prefers-color-scheme: dark)");
+const isDark = ref(darkMedia.matches);
+darkMedia.addEventListener("change", (e) => {
+  isDark.value = e.matches;
+});
 
 function icon(c: Component) {
   return () => h(NIcon, null, { default: () => h(c) });
@@ -204,8 +215,8 @@ watch(
 /* ---------- 桌面侧栏（Apple 总支栏体系） ---------- */
 
 .app-sider {
-  background: var(--bg-sidebar);
-  border-right: 1px solid var(--border-subtle);
+  background: var(--bg-window);
+  border-right: 0.5px solid var(--separator);
 }
 
 .app-sider :deep(.n-layout-sider__content) {
@@ -214,47 +225,36 @@ watch(
 
 .app-sider :deep(.n-menu) {
   background: transparent;
-  padding: 12px;
+  padding: var(--space-3);
 }
 
-/* 菜单项：Apple Music 风——选中 = 纯白 pill + 轻微抬起压力*/
+/* 菜单项：macOS 26 侧栏语言——选中 = accent soft 圆角块（8px 同心） */
 .app-sider :deep(.n-menu-item) {
-  --n-item-color-hover: rgba(0, 0, 0, 0.045);
-  --n-item-color-active: rgba(0, 0, 0, 0.045);
-  --n-item-color-active-hover: rgba(0, 0, 0, 0.06);
   --n-item-icon-size: 18px;
-  border-radius: 7px;
+  border-radius: var(--radius-control);
 }
 
 .app-sider :deep(.n-menu-item-content) {
-  border-radius: 7px;
+  border-radius: var(--radius-control);
 }
 
 .app-sider :deep(.n-menu-item-content--selected) {
-  background: #ffffff;
-  box-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.07),
-    0 1px 2px rgba(0, 0, 0, 0.04);
   font-weight: 600;
-}
-
-.app-sider :deep(.n-menu-item-content--selected .n-menu-item-content__icon) {
-  color: var(--color-accent);
 }
 
 /* 左上角 logo 区充当窗口拖动区（Overlay 标题栏），红绿灯叠在上层 */
 .logo {
   padding: 26px 14px 10px 76px;
-  font-size: 16px;
+  font-size: var(--text-callout);
   font-weight: 600;
   letter-spacing: -0.01em;
-  color: var(--text-primary);
+  color: var(--label);
 }
 
 .continue-wrap {
-  padding: 12px 12px 0;
-  border-top: 1px solid var(--border-subtle);
-  margin-top: 8px;
+  padding: var(--space-3) var(--space-3) 0;
+  border-top: 0.5px solid var(--separator);
+  margin-top: var(--space-2);
 }
 
 /* ---------- 平板区间 64px 图标栏 ---------- */
@@ -267,45 +267,45 @@ watch(
   align-items: stretch;
   gap: 2px;
   padding: 26px 8px 12px;
-  background: var(--bg-sidebar);
-  border-right: 1px solid var(--border-subtle);
+  background: var(--bg-window);
+  border-right: 0.5px solid var(--separator);
 }
 
 .rail-logo {
   padding: 0 0 14px;
-  font-size: 15px;
+  font-size: var(--text-subhead);
   font-weight: 600;
   text-align: center;
-  color: var(--text-primary);
+  color: var(--label);
 }
 
 .rail-item {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 44px;
+  height: var(--hit);
   border: none;
-  border-radius: 7px;
+  border-radius: var(--radius-control);
   background: none;
-  color: var(--text-secondary);
+  color: var(--label-2);
   cursor: pointer;
-  transition: background-color 0.12s ease;
+  transition: background-color var(--dur-fast) ease;
   width: 100%;
 }
 
 .rail-item:hover {
-  background: rgba(0, 0, 0, 0.05);
+  background: var(--fill-4);
 }
 
 .rail-item.active {
-  background: rgba(0, 0, 0, 0.07);
-  color: var(--color-accent);
+  background: var(--accent-fill);
+  color: var(--accent);
 }
 
 .rail-item.continue {
-  color: var(--color-accent-info);
+  color: var(--accent);
   margin-top: auto;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 0.5px solid var(--separator);
   border-radius: 0;
 }
 
@@ -318,13 +318,13 @@ watch(
 /* ---------- 主内容区 ---------- */
 
 .main {
-  padding: 24px 28px;
+  padding: var(--space-5) var(--space-6);
   overflow: auto;
-  background: var(--bg-content);
+  background: var(--bg-grouped);
 }
 
 .main.mobile {
-  padding: 14px 14px;
+  padding: 16px 16px;
   padding-bottom: calc(86px + env(safe-area-inset-bottom, 0px));
 }
 
@@ -337,22 +337,19 @@ watch(
 
 .tab-bar {
   position: fixed;
-  left: 14px;
-  right: 14px;
+  left: 16px;
+  right: 16px;
   bottom: calc(12px + env(safe-area-inset-bottom, 0px));
   z-index: 100;
   display: flex;
   align-items: stretch;
-  border-radius: 26px;
+  border-radius: var(--radius-pill);
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.62);
-  -webkit-backdrop-filter: blur(34px) saturate(190%);
-  backdrop-filter: blur(34px) saturate(190%);
-  border: 0.5px solid rgba(255, 255, 255, 0.55);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.03),
-    0 10px 32px rgba(15, 35, 60, 0.16);
+  background: var(--glass-sheen), var(--glass-bg);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: none;
+  box-shadow: var(--glass-rim), var(--glass-drop);
 }
 
 .tab-item {
@@ -365,29 +362,27 @@ watch(
   padding: 9px 4px 7px;
   border: none;
   background: none;
-  color: var(--text-secondary);
-  font-size: 11px;
+  color: var(--label-2);
+  font-size: var(--text-caption2);
   cursor: pointer;
   min-width: 0;
   /* Apple 规范：可点触控区 ≥44pt */
-  min-height: 44px;
-  transition: color 0.12s ease;
+  min-height: var(--hit);
+  transition: color var(--dur-fast) var(--spring);
 }
 
 .tab-item.active {
-  color: var(--color-accent);
-  /* iOS 26 选中项：小型玻璃透镜（高光内边 + 微投影） */
-  background: rgba(255, 255, 255, 0.6);
-  border-radius: 18px;
-  margin: 4px;
-  padding: 5px 0 3px;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.75),
-    0 1px 6px rgba(0, 0, 0, 0.06);
+  color: var(--accent);
+  /* iOS 26 选中项：玻璃透镜——中性 fill + 顶部高光，不画实色盒 */
+  background: var(--fill-4);
+  border-radius: var(--radius-pill);
+  margin: 6px;
+  padding: 3px 0 1px;
+  box-shadow: var(--glass-highlight);
 }
 
 .tab-item.continue {
-  color: var(--color-accent-info);
+  color: var(--accent);
 }
 
 .tab-icon {

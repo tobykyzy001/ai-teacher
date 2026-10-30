@@ -276,8 +276,8 @@ function goQuiz(unitId: number): void {
 
 <style scoped>
 .back-btn {
-  margin-bottom: 12px;
-  font-size: 13px;
+  margin-bottom: var(--space-3);
+  font-size: var(--text-footnote);
 }
 
 .progress-wrap {
@@ -290,15 +290,15 @@ function goQuiz(unitId: number): void {
 }
 
 .chapter-row {
-  background: #fafafc;
+  background: var(--fill-4);
   cursor: pointer;
 }
 
 .chapter-chevron {
   flex-shrink: 0;
   align-self: center;
-  color: rgba(0, 0, 0, 0.45);
-  transition: transform 0.2s ease;
+  color: var(--label-3);
+  transition: transform 0.2s var(--spring);
 }
 
 .chapter-chevron.open {
@@ -309,7 +309,7 @@ function goQuiz(unitId: number): void {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .chapter-info {
@@ -321,7 +321,7 @@ function goQuiz(unitId: number): void {
 }
 
 .chapter-title {
-  font-size: 15px;
+  font-size: var(--text-subhead);
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -335,19 +335,19 @@ function goQuiz(unitId: number): void {
 .chapter-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex-shrink: 0;
 }
 
 .unit-row-indent {
-  padding-left: 32px;
+  padding-left: var(--space-8);
 }
 
 .unit-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .unit-info {
@@ -363,16 +363,16 @@ function goQuiz(unitId: number): void {
   width: 24px;
   height: 24px;
   border-radius: 50%;
-  background: #f2f3f5;
-  color: rgba(0, 0, 0, 0.55);
-  font-size: 12px;
+  background: var(--fill-3);
+  color: var(--label-2);
+  font-size: var(--text-caption1);
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .unit-title {
-  font-size: 15px;
+  font-size: var(--text-subhead);
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -381,7 +381,7 @@ function goQuiz(unitId: number): void {
 
 .unit-actions {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   flex-shrink: 0;
 }
 </style>
