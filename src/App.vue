@@ -87,7 +87,16 @@
           reading: isReadingRoute,
         }"
       >
-        <router-view />
+        <!-- 页面切换：极短淡入淡出（无位移）。只做透明度、不加位移动画——
+             HIG Motion 要求"简短可中断"，而位移入场在大块内容上来回时反而显廉价。
+             key 用 route.path 而非 fullPath：同页换 query（如做题进度）不重播动画。
+             必须 mode="out-in"：并发模式下新旧两页会同时存在于文档流、垂直堆叠，
+             页面高度瞬间翻倍、滚动条跳一下；out-in 先退后进，总时长约 90+120ms。 -->
+        <transition name="page-fade" mode="out-in">
+          <router-view v-slot="{ Component }">
+            <component :is="Component" :key="route.path" />
+          </router-view>
+        </transition>
       </n-layout-content>
       <!-- 收放钮：固定悬浮的液态玻璃圆钮，两个端点各有明确归属——
            展开态「«」骑在"菜单列 / 正文列"的接缝上（left 204，圆心正压缝 x=220）；
@@ -516,7 +525,11 @@ watch(
    放进列表里反而会因 hover 框宽度（0–64）与选中胶囊（8–56）不一致而显得没对齐 */
 .edge-fab {
   position: fixed;
-  top: 28px;
+  /* 与 macOS Overlay 红绿灯同一水平线：红绿灯在标题带内垂直居中、中心约 y=24，
+     钮高 32 故 top=8 时圆心 y=24，正好与红绿灯齐平。同时钮底缘落在 y=40，
+     离下方菜单第一项（y=70）留出 30px 呼吸——上一版 top:28 时底缘到 60、
+     距第一项仅 10px，几乎压着菜单上沿 */
+  top: 8px;
   /* 高于阅读页悬浮箭头(20)/点按区(10)，低于划词弹窗(1000)与 naive 模态 */
   z-index: 800;
   width: 32px;
@@ -549,6 +562,33 @@ watch(
 }
 
 /* 拖窗/双击缩放由 main.ts 按"背景区"判定（非按钮/输入/正文），无需额外拖动层 */
+
+/* ---------- 页面切换过渡 ---------- */
+
+/* 纯透明度，无位移。出于两点：
+   1. 位移入场会让长页在切换时"整体窜一下"，观感比直接切换更廉价；
+   2. out-in 模式下两页不共存，透明度动画不会引起布局跳动。
+   淡出略快于淡入（90 vs 120ms）：离开要干脆，进入可以稍缓。 */
+.page-fade-enter-active {
+  transition: opacity 0.12s ease;
+}
+
+.page-fade-leave-active {
+  transition: opacity 0.09s ease;
+}
+
+.page-fade-enter-from,
+.page-fade-leave-to {
+  opacity: 0;
+}
+
+/* 减弱动效偏好：切页直接到位 */
+@media (prefers-reduced-motion: reduce) {
+  .page-fade-enter-active,
+  .page-fade-leave-active {
+    transition: none !important;
+  }
+}
 
 /* ---------- 手机端 Tab 栏 ---------- */
 
