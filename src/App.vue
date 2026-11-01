@@ -395,8 +395,21 @@ watch(
 
 /* 菜单项：macOS 26 侧栏语言——选中 = accent soft 圆角块（8px 同心） */
 .app-sider :deep(.n-menu-item) {
-  --n-item-icon-size: 18px;
   border-radius: var(--radius-control);
+}
+
+/* 收起时图标不放大：naive 默认 collapsedIconSize=24 / iconSize=20，折叠动画里
+   图标会同时"长大 20%"——用户会察觉成"图标突然变大了"，属意外效果。
+   这里把折叠态的字形尺寸钉回 20px，与展开态一致，收起过程只发生位移、不发生缩放。
+   注意两点：
+   1. 必须 !important——尺寸是 naive 写在图标 div 上的内联 style（fontSize），
+      普通样式表规则压不住内联；
+   2. 只改 font-size，不动图标盒（width/height 两态都是 24px = maxIconSize），
+      所以图标的水平中心仍在 x=32，布局零位移。
+   （原先这里写的 `--n-item-icon-size: 18px` 是死代码：naive 的 CSS 里没有这个
+     变量，写了也从未生效过。） */
+.app-sider.collapsed :deep(.n-menu-item-content__icon) {
+  font-size: 20px !important;
 }
 
 .app-sider :deep(.n-menu-item-content) {
