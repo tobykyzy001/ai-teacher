@@ -14,7 +14,7 @@
         class="app-sider"
         :class="{ collapsed: siderHidden }"
       >
-        <div class="logo" data-tauri-drag-region>AI 伴读</div>
+        <div class="logo">AI 伴读</div>
         <n-menu
           :options="menuOptions"
           :value="activeKey"
@@ -28,7 +28,7 @@
       </n-layout-sider>
       <!-- 平板区间：自绘 64px 图标栏 -->
       <aside v-else-if="isTablet" class="tablet-rail">
-        <div class="rail-logo" data-tauri-drag-region>伴</div>
+        <div class="rail-logo">伴</div>
         <button
           v-for="item in menuOptions"
           :key="item.key"
@@ -63,13 +63,8 @@
       </n-layout-content>
       <!-- 收起/唤回共用一枚悬浮玻璃圆钮，沿侧栏边缘跟随平移（与 naive sider 同为 .3s 标准缓动）：
            展开时骑缝贴在侧栏右缘（« 提示收起，右半落在内容 24px 左内边距的空白带、不压页面内容），
-           收起时滑到左上角红绿灯下方（≡ 再唤出）；透明拖动层仅在收起态补上 logo 丢失的窗口拖动区，
-           圆钮永远在其上方、且不嵌进 data-tauri-drag-region，避免点击与拖动相争 -->
-      <div
-        v-if="siderCollapsed"
-        class="corner-dock-drag"
-        data-tauri-drag-region
-      ></div>
+           收起时滑到左上角红绿灯下方（≡ 再唤出）。窗口拖动/双击缩放统一由 main.ts 按"背景区"
+           判定（非按钮/输入/正文），这里不需要额外的拖动标记层 -->
       <button
         v-if="!isMobile && !isTablet"
         class="edge-fab"
@@ -317,7 +312,7 @@ watch(
   font-weight: 600;
 }
 
-/* 左上角 logo 区充当窗口拖动区（Overlay 标题栏），红绿灯叠在上层 */
+/* 左上角 logo 区即是窗口拖动区（Overlay 标题栏），红绿灯叠在上层 */
 .logo {
   padding: 26px 14px 10px 76px;
   font-size: var(--text-callout);
@@ -456,16 +451,8 @@ watch(
   color: var(--accent);
 }
 
-/* 收起态 logo 拖动区随侧栏一并消失：左上角垫一块透明拖动层补回窗口拖动能力，
-   z 序压过页面内容但低于唤回圆钮(800) */
-.corner-dock-drag {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 220px;
-  height: 64px;
-  z-index: 790;
-}
+/* 收起态 logo 拖动区随侧栏一并消失：内容占满全宽后左上角由 .main 的顶部空带接手
+   拖窗/双击缩放（main.ts 把任何非交互、非正文的背景都当标题栏），无需额外拖动层 */
 
 /* ---------- 手机端 Tab 栏 ---------- */
 
