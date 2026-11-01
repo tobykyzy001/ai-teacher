@@ -9,7 +9,7 @@
            之前"字自己折起来"的成因是两段 .3s 过渡叠加：sider 宽度在收窄，菜单文字列又同时
            在淡出，于是文字被正在变窄的容器从右往左切掉。这里把「收起」方向的过渡时长压成 0
            （见 .app-sider.collapsed 那组规则），点击那一刻文字就没了，全程只有宽度和图标在动；
-           「展开」方向不动，文字照旧淡入、logo 与"继续阅读"由变宽的侧栏自然揭示 -->
+           「展开」方向不动，文字照旧淡入、"继续阅读"由变宽的侧栏自然揭示 -->
       <n-layout-sider
         v-if="!isMobile && !isTablet"
         :width="220"
@@ -19,7 +19,39 @@
         class="app-sider"
         :class="{ collapsed: siderHidden }"
       >
-        <div class="logo"><span class="logo-text">AI 伴读</span></div>
+      <!-- 顶部空带：macOS Overlay 红绿灯压在这一块，不放任何可点内容（标题"AI 伴读"已移除，
+           应用名留在窗口标题/Dock 上）；高度只需容下红绿灯，列表因此整体上移、更紧凑 -->
+        <div class="sider-top" aria-hidden="true"></div>
+        <!-- 收放钮 = 图标列表的第一项（不再用骑缝悬浮圆钮）：几何与 .n-menu-item 完全对齐，
+             展开/收起只让 padding 与 margin 跟随 .3s 平移——图标在 x=56 与 x=32 之间滑动，
+             与导航图标同步位移，不出现"跳到另一个地方"的突兀感 -->
+        <button
+          class="sider-toggle"
+          type="button"
+          :title="siderHidden ? '展开菜单栏' : '收起菜单栏'"
+          :aria-label="siderHidden ? '展开菜单栏' : '收起菜单栏'"
+          :aria-expanded="!siderHidden"
+          @click="setSiderHidden(!siderHidden)"
+        >
+          <span class="sider-toggle-icon">
+            <n-icon v-if="siderHidden" :size="19"><MenuOutline /></n-icon>
+            <svg
+              v-else
+              viewBox="0 0 24 24"
+              width="19"
+              height="19"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <polyline points="11,6 5,12 11,18" />
+              <polyline points="17,6 11,12 17,18" />
+            </svg>
+          </span>
+        </button>
         <!-- 折叠态的文字气泡由 n-menu 自己提供（dropdownEnabled = root && collapsed），
              不要再挂 title 属性，否则会和它同时弹。
              collapsed-width 给 64（= 图标栏宽度），配合收起态把菜单横向内边距清零：
@@ -84,37 +116,8 @@
       >
         <router-view />
       </n-layout-content>
-      <!-- 收起/唤回共用一枚悬浮玻璃圆钮，沿侧栏边缘跟随平移（与 naive sider 同为 .3s 标准缓动）：
-           始终骑在侧栏右缘缝上——展开=204（220−32/2，右半落在内容 24px 左内边距的空白带、
-           不压页面内容），收起=48（64−32/2，右半落在内容侧、左半落在图标栏上方的空白 logo 带，
-           不会压到 x=32 处那列图标）。窗口拖动/双击缩放统一由 main.ts 按"背景区"
-           判定（非按钮/输入/正文），这里不需要额外的拖动标记层 -->
-      <button
-        v-if="!isMobile && !isTablet"
-        class="edge-fab"
-        type="button"
-        :style="{ left: siderCollapsed ? '48px' : '204px' }"
-        :title="siderCollapsed ? '展开菜单栏' : '收起菜单栏'"
-        :aria-label="siderCollapsed ? '展开菜单栏' : '收起菜单栏'"
-        @click="setSiderHidden(!siderHidden)"
-      >
-        <n-icon v-if="siderCollapsed" :size="18"><MenuOutline /></n-icon>
-        <svg
-          v-else
-          viewBox="0 0 24 24"
-          width="19"
-          height="19"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
-        >
-          <polyline points="11,6 5,12 11,18" />
-          <polyline points="17,6 11,12 17,18" />
-        </svg>
-      </button>
+      <!-- 收放钮已并入侧栏图标列表（见上方 .sider-toggle），不再有骑缝悬浮圆钮：
+           窗口拖动/双击缩放统一由 main.ts 按"背景区"判定（非按钮/输入/正文），无需额外拖动层 -->
       <nav v-if="isMobile && !isReadingRoute" class="tab-bar">
         <button
           v-for="item in menuOptions"
@@ -284,10 +287,6 @@ function setSiderHidden(v: boolean): void {
   }
 }
 
-const siderCollapsed = computed(
-  () => siderHidden.value && !isMobile.value && !isTablet.value,
-);
-
 // 换页时把主内容区滚回顶部：滚动容器 .main 为所有页面共享，长页滚到底再进短页时
 // 旧滚动位置会把新页内容顶出视口（表现为"点去做题白屏"）
 const mainRef = ref<InstanceType<typeof NLayoutContent> | null>(null);
@@ -308,6 +307,65 @@ watch(
   border-right: 0.5px solid var(--separator);
 }
 
+/* 顶部空带：只给 macOS Overlay 红绿灯腾位（拖窗由 main.ts 的背景区判定接手）。
+   40px 足够容下红绿灯（其纵向中心约 y=26），列表因此比原来上移约 20px */
+.sider-top {
+  height: 40px;
+  flex-shrink: 0;
+}
+
+/* ---------- 收放钮 = 图标列表第一项 ----------
+   与 .n-menu-item / .n-menu-item-content 逐项对齐，收起/展开时它和导航图标走同一条
+   位移轨迹（图标中心 x：展开 56 → 收起 32），所以看起来就是"列表里的一项在平移"，
+   而不是一个悬浮钮跳位置。数值全部照抄 naive 的实际计算：
+   - 菜单 padding 12（收起态横向归零）；item 高度 40、圆角 8
+   - 图标盒 = maxIconSize = 24px，图标 19px 居中其中
+   - content 左内边距：展开 = rootIndent 32；收起 = collapsedWidth/2 − 24/2 = 20
+   ⇒ 图标中心：展开 12 + 32 + 12 = 56；收起 0 + 20 + 12 = 32
+   竖向间距照抄 .n-menu-item（margin-top 6px），与后续导航项同节奏 */
+.sider-toggle {
+  display: flex;
+  align-items: center;
+  height: 40px;
+  margin: 6px var(--space-3) 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--label-2);
+  cursor: pointer;
+  border-radius: var(--radius-control);
+  transition:
+    background-color var(--dur-fast) ease,
+    color var(--dur-fast) ease,
+    margin 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sider-toggle:hover {
+  background: var(--fill-4);
+  color: var(--accent);
+}
+
+.sider-toggle-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-left: 32px;
+  flex-shrink: 0;
+  transition: margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 收起态：外边距归零、图标内偏移 32→20，中心随导航图标一起落到 32 */
+.app-sider.collapsed .sider-toggle {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.app-sider.collapsed .sider-toggle-icon {
+  margin-left: 20px;
+}
+
 /* 收起态：侧栏收成 64px 图标栏，护栏线保留 */
 .app-sider.collapsed {
   border-right-color: var(--separator);
@@ -317,14 +375,19 @@ watch(
   background: transparent;
 }
 
+/* 菜单：左右与底部保留 12px 内边距，**顶部清零**——第一项自带 margin-top:6px，
+   若再叠上 padding-top:12px，收放钮到第一个导航项就会出现 20px 的 gap，
+   与项间 6px 的节奏不统一（收放钮现在就是列表第一项，间距必须同节奏） */
 .app-sider :deep(.n-menu) {
   background: transparent;
-  padding: var(--space-3);
+  padding: 0 var(--space-3) var(--space-3);
 }
 
 /* 收起态菜单横向内边距清零：图标水平中心 = 内边距 + (collapsedWidth/2 − iconSize/2)
    + iconSize/2。留 12px 的话图标会落到 x=44（导轨中线是 32），选中块的 ::before
-   （inset 8px）也会被挤偏；清零后图标正落在 64px 导轨中线上 */
+   （inset 8px）也会被挤偏；清零后图标正落在 64px 导轨中线上。
+   纵向 padding 不动（已在 .n-menu 统一为 top 0），收放钮自身的 margin 同步归零，
+   它才能和导航图标一样汇到 x=32 那一列 */
 .app-sider.collapsed :deep(.n-menu) {
   padding-left: 0;
   padding-right: 0;
@@ -365,17 +428,6 @@ watch(
   display: none;
 }
 
-/* 左上角 logo：收起态 64px 宽且正被 macOS 红绿灯压着，文字收掉留空（这块仍是拖窗区） */
-.app-sider.collapsed .logo {
-  padding-left: 0;
-  padding-right: 0;
-  text-align: center;
-}
-
-.app-sider.collapsed .logo-text {
-  display: none;
-}
-
 /* 菜单项：macOS 26 侧栏语言——选中 = accent soft 圆角块（8px 同心） */
 .app-sider :deep(.n-menu-item) {
   --n-item-icon-size: 18px;
@@ -388,18 +440,6 @@ watch(
 
 .app-sider :deep(.n-menu-item-content--selected) {
   font-weight: 600;
-}
-
-/* 左上角 logo 区即是窗口拖动区（Overlay 标题栏），红绿灯叠在上层。
-   nowrap：展开时宽度从 64 长到 220，若不锁单行，标题会在动画途中折成两行再展开 */
-.logo {
-  padding: 26px 14px 10px 76px;
-  font-size: var(--text-callout);
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  white-space: nowrap;
-  overflow: hidden;
-  color: var(--label);
 }
 
 .continue-wrap {
@@ -513,51 +553,10 @@ watch(
   padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
 }
 
-/* ---------- 侧栏收起态：骑缝唤回钮 ---------- */
+/* ---------- 侧栏收放：收放钮已在图标列表内，不再有固定悬浮钮 ---------- */
 
-/* 收起后侧栏仍是 64px 图标栏，它的 logo 空带继续顶着 macOS Overlay 红绿灯，
-   .main 不再需要 64px 顶部留白——上一版收成 0 宽时靠它腾地方，现在留着反而会让
-   内容在收放瞬间整体下沉/上浮一次，故删除 */
-
-/* 收起/唤回共用圆钮：复用阅读页 .side-arrow 的液态玻璃配方；固定 y=28 只做水平
-   平移，left 与 naive sider 同为 .3s/标准缓动——全程以约 30px 的偏移贴着收放方向
-   的侧栏缝滑动，视觉上随即跟着它走 */
-.edge-fab {
-  position: fixed;
-  top: 28px;
-  /* 高于阅读页悬浮箭头(20)/点按区(10)，低于划词弹窗(1000)与 naive 模态 */
-  z-index: 800;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  line-height: 1;
-  color: var(--label-2);
-  background: var(--glass-sheen), var(--glass-bg);
-  -webkit-backdrop-filter: blur(20px) saturate(170%);
-  backdrop-filter: blur(20px) saturate(170%);
-  border: none;
-  box-shadow:
-    var(--glass-rim),
-    0 1px 6px rgba(0, 0, 0, 0.1);
-  outline: none;
-  cursor: pointer;
-  user-select: none;
-  transition:
-    left 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-    background 0.15s,
-    color 0.15s;
-}
-
-.edge-fab:hover,
-.edge-fab:focus-visible {
-  color: var(--accent);
-}
-
-/* 收起态 logo 拖动区随侧栏一并消失：内容占满全宽后左上角由 .main 的顶部空带接手
-   拖窗/双击缩放（main.ts 把任何非交互、非正文的背景都当标题栏），无需额外拖动层 */
+/* 拖窗/双击缩放由 main.ts 按"背景区"判定（非按钮/输入/正文），
+   侧栏顶部的 .sider-top 空带与 .sider-toggle 周边空白都自动命中，无需额外拖动层 */
 
 /* ---------- 手机端 Tab 栏 ---------- */
 
@@ -681,11 +680,12 @@ watch(
   }
 }
 
-/* 减弱动态偏好：收起/展开改为瞬时切换（naive sider 的宽度过渡与唤回钮平移一并关掉） */
+/* 减弱动态偏好：收起/展开改为瞬时切换（sider 宽度过渡与收放钮平移一并关掉） */
 @media (prefers-reduced-motion: reduce) {
   .main,
   .app-sider,
-  .edge-fab {
+  .sider-toggle,
+  .sider-toggle-icon {
     transition: none !important;
   }
 }
