@@ -18,6 +18,8 @@ export interface ThemeOption {
   swatch: string;
   /** 边框色，深色主题下让色板边界可见 */
   border: string;
+  /** 用图标代替纯色块（"跟随系统"没有单一颜色，不适合做纯色圆点） */
+  icon?: "contrast";
 }
 
 export const THEME_OPTIONS: ThemeOption[] = [
@@ -25,7 +27,16 @@ export const THEME_OPTIONS: ThemeOption[] = [
   { key: "sepia", label: "暖纸", swatch: "#F8F2E2", border: "rgba(120,90,55,0.3)" },
   { key: "slate", label: "深灰", swatch: "#48484A", border: "rgba(120,120,128,0.6)" },
   { key: "night", label: "夜黑", swatch: "#1C1C1E", border: "rgba(84,84,88,0.6)" },
-  { key: "system", label: "跟随系统", swatch: "linear-gradient(135deg,#FFFFFF 50%,#1C1C1E 50%)", border: "rgba(60,60,67,0.29)" },
+  // 跟随系统没有"一个颜色"可展示：原来用 conic-gradient 拼半黑半白，缩放后有锯齿、
+  // 看着像没画好的圆。改为环形对比图标（ContrastOutline）——半实半空是系统里
+  // "明暗自适应"的通行表示法，矢量也不会有锯齿
+  {
+    key: "system",
+    label: "跟随系统",
+    swatch: "transparent",
+    border: "rgba(60,60,67,0.29)",
+    icon: "contrast",
+  },
 ];
 
 export const THEME_KEY = "ai-teacher:theme";

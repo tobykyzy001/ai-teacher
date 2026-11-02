@@ -67,7 +67,11 @@
           :aria-pressed="themeStore.key === t.key"
           @click="themeStore.setTheme(t.key)"
         >
-          <span class="theme-chip-check" aria-hidden="true">✓</span>
+          <!-- 跟随系统没有单一颜色，用环形对比图标表示"明暗自适应" -->
+          <n-icon v-if="t.icon === 'contrast'" class="theme-chip-glyph" :size="22">
+            <ContrastOutline />
+          </n-icon>
+          <span v-else class="theme-chip-check" aria-hidden="true">✓</span>
         </button>
       </div>
       <div class="muted small theme-hint">
@@ -135,12 +139,14 @@ import {
   NCard,
   NForm,
   NFormItem,
+  NIcon,
   NInput,
   NSpace,
   NSpin,
   NSwitch,
   useMessage,
 } from "naive-ui";
+import { ContrastOutline } from "@vicons/ionicons5";
 import { api, type ConnectionTestResult, type LlmSettings } from "../api";
 import { BUILD_HASH, BUILD_TIME, BUILD_VERSION } from "../build-info";
 import { errText } from "../utils";
@@ -251,6 +257,18 @@ async function onTest(): Promise<void> {
   box-shadow:
     0 0 0 2px var(--bg-grouped-2),
     0 0 0 3.5px var(--accent);
+}
+
+/* 跟随系统的图标片：无填充，图标用正文色描边。
+   底色透明 → 在白色卡片上靠 border 划出圆形边界（border 由 :style 的 borderColor 给），
+   颜色用 --label 而非 --label-2：对比图标本身线条细，再淡化就糊了 */
+.theme-chip-glyph {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--label);
 }
 
 .theme-chip-check {

@@ -362,39 +362,39 @@ watch(
   padding-right: 0;
 }
 
-/* ---------- 文字瞬时消失 / 延迟出现（侧栏里只留图标） ----------
-   起因：naive 的侧栏宽度是 .3s 过渡，菜单文字列自带 .3s 的 opacity 过渡，两者同时进行，
-   眼睛就会看到"文字被正在变窄的容器从右往左挤扁"这一过程。这里把两个方向分别定死：
-   - 收起（.collapsed 命中）：transition:none，点击那一刻文字直接消失，不参与任何渐变；
-   - 展开（.collapsed 移除）：带 .18s 延迟再淡入，等宽度基本铺开了文字才出现，
-     不会在 64px 宽度里先被裁一刀。收起态那条 transition:none 是简写，会把
-     transition-delay 一并重置为 0，所以延迟只作用于展开方向，互不干扰 */
+/* ---------- 折叠 = 遮罩裁切（文字不淡出，只被越收越窄的容器裁掉） ----------
+   思路：文字列保持 opacity: 1 且 white-space: nowrap，靠 max-width 由 220px 收到 0，
+   让父容器把它从右往左"遮"出去——文字本身不变淡、也不换行重排，
+   视觉上就是一道滑动的遮罩，比"淡出/瞬隐"更接近物理直觉。
+   两个关键点：
+   1. 必须用 max-width，不能用 width：width 的 auto 与具体值之间无法插值，过渡会跳变；
+   2. naive 默认给这一列 .3s 的 opacity 过渡，会把遮罩变成"一边裁一边淡出"，
+      两种动画叠加反而糊——这里把 opacity 固定为 1，只留 max-width 在动。
+   展开方向同理：max-width 回到 220px，文字随容器变宽被"揭开"，自带先后感。 */
 .app-sider :deep(.n-menu-item-content-header) {
+  opacity: 1 !important;
+  overflow: hidden;
+  white-space: nowrap;
+  max-width: 220px;
   transition:
     color var(--dur) ease,
-    opacity var(--dur-fast) ease 0.18s;
+    max-width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.app-sider.collapsed :deep(.n-menu-item-content-header),
-.app-sider.collapsed :deep(.n-menu-item-content__arrow) {
-  transition: none;
-}
-
-/* 折叠态图标由 naive 按 collapsedWidth 水平居中；文字列虽已 opacity:0 但仍占着 1fr 宽度，
-   压成 0 才不会把图标挤出导轨中线 */
+/* 收起态：遮罩拉满（宽度 0）；文字仍不透明，只是没地方显示了。
+   此时它也不再抢占 1fr 宽度，图标自然落回导轨中线 */
 .app-sider.collapsed :deep(.n-menu-item-content-header) {
-  width: 0;
-  overflow: hidden;
+  max-width: 0;
 }
 
-/* 同理收掉右侧 18px 的箭头内边距（折叠态箭头本就 opacity:0），
-   否则 24px 图标 + 16px 箭头会撑破 64px 宽的项、把图标顶偏 */
-.app-sider.collapsed :deep(.n-menu-item-content) {
-  padding-right: 0;
-}
-
+/* 箭头随遮罩一起收掉（它也在 content 里，留着会撑破 64px 的项） */
 .app-sider.collapsed :deep(.n-menu-item-content__arrow) {
   display: none;
+}
+
+/* 同理收掉右侧 18px 的箭头内边距，否则 24px 图标 + 16px 箭头会把图标顶偏 */
+.app-sider.collapsed :deep(.n-menu-item-content) {
+  padding-right: 0;
 }
 
 /* 菜单项：macOS 26 侧栏语言——选中 = accent soft 圆角块（8px 同心） */
@@ -466,10 +466,14 @@ watch(
   flex-shrink: 0;
 }
 
+/* 与菜单文字同一套遮罩逻辑：保持不透明、单行，靠 max-width 收窄被裁掉 */
 .nav-row-label {
   margin-left: 8px;
   white-space: nowrap;
   overflow: hidden;
+  opacity: 1;
+  max-width: 160px;
+  transition: max-width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* 继续阅读：与导航列表之间用一条分隔线分组，靠视觉区隔而非换材质 */
@@ -486,7 +490,8 @@ watch(
 }
 
 .app-sider.collapsed .nav-row-label {
-  display: none;
+  max-width: 0;
+  margin-left: 0;
 }
 
 .app-sider.collapsed .continue-wrap {
