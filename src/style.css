@@ -311,6 +311,40 @@
   }
 }
 
+/* ============================================================
+   主题色板（设置页「外观」与阅读页 Aa 菜单共用）
+   色值写在这里而不是内联 style：内联的 `background` 是**简写**，会把
+   background-clip 一并重置为 border-box，且优先级高于任何样式表规则 ——
+   半黑半白的圆因此把渐变铺到 1px 半透明边框底下，深色侧衬亮边框、
+   浅色侧衬暗边框，圆边出现"黑漏白、白漏黑"的脏弧。
+   放到样式表里就能同时声明 background + background-clip: padding-box。
+   ============================================================ */
+[data-swatch="paper"] {
+  background: #ffffff;
+}
+[data-swatch="sepia"] {
+  background: #f8f2e2;
+}
+[data-swatch="slate"] {
+  background: #48484a;
+}
+[data-swatch="night"] {
+  background: #1c1c1e;
+}
+
+/* 跟随系统：左右对半。用 90° 线性渐变（conic 会切出楔形且边缘锯齿），
+   并裁到 padding-box，保证圆边只由 border-radius 抗锯齿、不再透出下层 */
+[data-swatch="split"] {
+  background: linear-gradient(
+    90deg,
+    #1c1c1e 0%,
+    #1c1c1e 50%,
+    #ffffff 50%,
+    #ffffff 100%
+  );
+  background-clip: padding-box;
+}
+
 /* 兼容旧变量名（视图逐个改造期间继续有效，改完即删） */
 :root {
   --bg-content: var(--bg-grouped-2);

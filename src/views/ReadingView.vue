@@ -114,7 +114,8 @@
                   <button
                     class="theme-btn"
                     :class="{ active: themeStore.key === t.key }"
-                    :style="{ background: t.swatch, borderColor: t.border }"
+                    :data-swatch="t.swatch"
+                    :style="{ borderColor: t.border }"
                     :title="t.label"
                     @click="themeStore.setTheme(t.key)"
                   />

@@ -14,8 +14,14 @@ export type ThemeKey = "light" | "sepia" | "slate" | "night" | "system";
 export interface ThemeOption {
   key: ThemeKey;
   label: string;
-  /** 取色用的代表色（设置页色板） */
-  swatch: string;
+  /**
+   * 色板外观标识，对应 style.css 里的 `[data-swatch="…"]` 规则
+   * （设置页 .theme-chip 与阅读页 .theme-btn 共用同一套）。
+   * 注意这里**不能**放内联 background 值：内联 `background` 简写会把
+   * background-clip 重置成 border-box（优先级还高于样式表），
+   * 导致半黑半白的圆边缘出现"黑漏白/白漏黑"的脏弧。
+   */
+  swatch: "paper" | "sepia" | "slate" | "night" | "split";
   /** 边框色，深色主题下让色板边界可见 */
   border: string;
   /** 该选项前画一道竖分隔线，表示"与前几个不属于同一组" */
@@ -23,20 +29,17 @@ export interface ThemeOption {
 }
 
 export const THEME_OPTIONS: ThemeOption[] = [
-  { key: "light", label: "纸白", swatch: "#FFFFFF", border: "rgba(60,60,67,0.29)" },
-  { key: "sepia", label: "暖纸", swatch: "#F8F2E2", border: "rgba(120,90,55,0.3)" },
-  { key: "slate", label: "深灰", swatch: "#48484A", border: "rgba(120,120,128,0.6)" },
-  { key: "night", label: "夜黑", swatch: "#1C1C1E", border: "rgba(84,84,88,0.6)" },
+  { key: "light", label: "纸白", swatch: "paper", border: "rgba(60,60,67,0.29)" },
+  { key: "sepia", label: "暖纸", swatch: "sepia", border: "rgba(120,90,55,0.3)" },
+  { key: "slate", label: "深灰", swatch: "slate", border: "rgba(120,120,128,0.6)" },
+  { key: "night", label: "夜黑", swatch: "night", border: "rgba(84,84,88,0.6)" },
   // 跟随系统 = 半黑半白的圆，直白表示"随系统在明/暗之间切换"。
-  // 用 90° 线性渐变而非 conic-gradient：conic 会切出一个楔形、边缘还带锯齿；
-  // 90° 就是干净的左右对半，圆边由 border-radius 自然抗锯齿。
-  // dividerBefore 在它前面画一道竖线——把它与左侧 4 套纸张主题分成两组，
-  // 说明"这不是第 5 种配色，而是跟随系统明暗"。
+  // 渐变定义在 style.css 的 [data-swatch="split"] 里（不写内联，理由见 swatch 字段注释）；
+  // dividerBefore 在它前面画一道竖线，把它与左侧 4 套配色主题分成两组。
   {
     key: "system",
     label: "跟随系统",
-    swatch:
-      "linear-gradient(90deg, #1C1C1E 0%, #1C1C1E 50%, #FFFFFF 50%, #FFFFFF 100%)",
+    swatch: "split",
     border: "rgba(60,60,67,0.29)",
     dividerBefore: true,
   },

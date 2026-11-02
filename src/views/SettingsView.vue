@@ -63,7 +63,8 @@
           <button
             class="theme-chip"
             :class="{ active: themeStore.key === t.key, split: t.dividerBefore }"
-            :style="{ background: t.swatch, borderColor: t.border }"
+            :data-swatch="t.swatch"
+            :style="{ borderColor: t.border }"
             :title="t.label"
             :aria-label="t.label"
             :aria-pressed="themeStore.key === t.key"
