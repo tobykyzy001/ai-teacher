@@ -8,7 +8,6 @@
       <div class="muted small empty-extra">{{ error }}</div>
       <n-space>
         <n-button @click="load">重试</n-button>
-        <n-button @click="goBack">返回</n-button>
       </n-space>
     </n-empty>
 
@@ -83,15 +82,9 @@
               </div>
             </div>
 
-            <!-- 阅读设置：Apple 图书风（主题 + 字号）；手机默认收起，Aa 圆钮展开 -->
-            <button
-              class="back-fab"
-              title="返回书库"
-              aria-label="返回书库"
-              @click="goBack"
-            >
-              ‹
-            </button>
+            <!-- 阅读设置：Apple 图书风（主题 + 字号）；手机默认收起，Aa 圆钮展开。
+                 返回书库不设独立按钮——侧栏「书架」已是常驻导航，
+                 阅读页再放一个语义重复的 ‹ 圆钮只会跟 Aa 挤在一起 -->
             <button
               class="aa-fab"
               title="阅读设置"
@@ -949,12 +942,6 @@ function onAskEnter(e: KeyboardEvent): void {
   onAskSubmit();
 }
 
-function goBack(): void {
-  const c = chapter.value;
-  if (c && c.segments.length > 0) router.push(`/books/${c.segments[0].unit.book_id}`);
-  else router.push("/library");
-}
-
 function statusType(status: UnitStatus): TagType {
   if (status === "reading") return "warning";
   if (status === "done") return "success";
@@ -1302,6 +1289,7 @@ function renderMarkdown(src: string): string {
 .unit-wrap,
 .unit-wrap p,
 .unit-wrap li,
+.unit-wrap blockquote,
 .unit-wrap h1,
 .unit-wrap h2,
 .unit-wrap h3 {
@@ -1309,8 +1297,11 @@ function renderMarkdown(src: string): string {
   background: transparent;
 }
 
+/* 节标题（章内小节名）：加粗 + 主题标题色，与正文拉开层级。
+   不加 border-left / 引号等修饰——加了会被误读成"引用块" */
 .seg-title {
   color: var(--reading-heading) !important;
+  font-weight: 700;
 }
 
 .content-img {
@@ -1397,8 +1388,7 @@ function renderMarkdown(src: string): string {
   transform: scale(0.94);
 }
 
-/* Aa 圆钮 / 返回钮：手机端阅读设置与退出入口（Apple Books 的阅读 chrome，功能层 glass） */
-.back-fab,
+/* Aa 圆钮：手机端阅读设置入口（Apple Books 的阅读 chrome，功能层 glass） */
 .aa-fab {
   display: none;
   position: absolute;
@@ -1422,39 +1412,14 @@ function renderMarkdown(src: string): string {
   transition: transform var(--dur-fast) var(--spring);
 }
 
-.back-fab:active,
 .aa-fab:active {
   transform: scale(0.94);
 }
 
-.back-fab {
-  display: none;
-  position: absolute;
-  top: 0;
-  left: 0;
-  z-index: 15;
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  border: none;
-  background: var(--glass-sheen), var(--glass-bg);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-  box-shadow:
-    var(--glass-rim),
-    0 2px 8px rgba(0, 0, 0, 0.08);
-  color: var(--label-2);
-  font-size: 24px;
-  font-weight: 300;
-  line-height: 1;
-  cursor: pointer;
-  transition: transform var(--dur-fast) var(--spring);
-}
 
 /* 手机阅读页沉浸：只留一行居中小标题，章导航隐去（翻页走两侧箭头/滑动），原文拆卡片框 */
 @media (max-width: 820px) {
-  .aa-fab,
-  .back-fab {
+  .aa-fab {
     display: block;
   }
 

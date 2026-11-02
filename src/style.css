@@ -77,6 +77,7 @@
   /* —— Glass（仅功能层：导航栏/Tab/悬浮钮/浮层；内容层禁用）——
      Liquid Glass 三要素：雾化半透明底（背后内容透出）+ 顶部流向高光 + 边缘折射环 */
   --glass-bg: rgba(250, 250, 252, 0.62);
+  --glass-bg-hover: rgba(250, 250, 252, 0.78); /* 悬停态：同材质提亮一档 */
   --glass-blur: blur(28px) saturate(200%) brightness(1.06);
   --glass-highlight: inset 0 0.5px 0 rgba(255, 255, 255, 0.95);
   --glass-sheen: linear-gradient(
@@ -127,6 +128,7 @@
     --sys-red: #ff453a;
 
     --glass-bg: rgba(44, 44, 46, 0.6);
+    --glass-bg-hover: rgba(58, 58, 60, 0.72); /* 暗色下同材质提亮一档 */
     --glass-highlight: inset 0 0.5px 0 rgba(255, 255, 255, 0.22);
     --glass-sheen: linear-gradient(
       180deg,
@@ -332,11 +334,19 @@ h6 {
   line-height: 1.5;
 }
 
-/* ---------- 行动按钮语言（两端通用） ---------- */
+/* ---------- 行动按钮语言（两端通用） ----------
+   统一规则：全站只保留一套材质（液态玻璃三件套），层级靠"实心 / 淡色"表达，不换材质。
+   之前 primary=实心墨黑、default=白玻璃片、btn-tinted=灰胶囊，三套并排就会出现
+   "一下黑一下白"的割裂感。现收敛为：
+   · primary   = 实心 accent（唯一强调色，一屏一处即可）
+   · default   = 同一层玻璃、底色更淡，字色取正文色
+   · 两者的圆角 / 高度 / 内边距 / 过渡完全一致，只差底色与字色
+   所有颜色一律走令牌，主题切换时自动跟随（按钮上不要写死色值） */
 
 /* 按钮 = Liquid Glass 控件（功能层）：雾化玻璃底 + 流向高光 + 折射环 + 悬浮投影；naive 后注入用 !important 压住 */
 .n-button:not(.n-button--disabled):not(.n-button--text-type):not(.n-button--quaternary-type) {
   border: none !important;
+  border-radius: var(--radius-pill) !important;
   box-shadow:
     var(--glass-rim),
     var(--glass-drop);
@@ -346,30 +356,33 @@ h6 {
     background-color var(--dur-fast) ease;
 }
 
-/* 默认按钮 = 白色玻璃片：半透明雾底 + 背后内容透出 + 顶部流向高光 */
+/* 默认按钮 = 与主按钮同层玻璃，仅底色更淡、字色取正文色 */
 .n-button--default-type:not(.n-button--disabled):not(.btn-tinted):not(.n-button--primary-type) {
   background: var(--glass-sheen), var(--glass-bg) !important;
   -webkit-backdrop-filter: blur(18px) saturate(190%) brightness(1.04);
   backdrop-filter: blur(18px) saturate(190%) brightness(1.04);
+  color: var(--label) !important;
 }
 
 .n-button--default-type:not(.n-button--disabled):not(.btn-tinted):not(.n-button--primary-type):hover {
-  background: var(--glass-sheen), rgba(250, 250, 252, 0.78) !important;
+  background: var(--glass-sheen), var(--glass-bg-hover) !important;
   box-shadow:
     var(--glass-rim),
     0 1px 2px rgba(0, 0, 0, 0.05),
     0 4px 16px rgba(0, 0, 0, 0.1);
 }
 
-/* 主按钮（实心墨黑 prominent）：厚质高光 + 落地投影；
-   暗色下底为白，内顶高光改用黑丝让厚度同样可读 */
+/* 主按钮（实心 accent）：厚质高光 + 落地投影。
+   底色/字色交给 naive 主题（common.primaryColor），随明暗主题自动切换；
+   投影不再写死 rgba(29,29,31)（那是亮色墨黑），改用 currentColor 派生，
+   亮色下是墨黑投影、暗色下自动翻成白投影 */
 .n-button--primary-type:not(.n-button--disabled) {
   border: none !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.18),
     inset 0 -1px 0 rgba(0, 0, 0, 0.22),
     0 1px 2px rgba(0, 0, 0, 0.18),
-    0 4px 16px rgba(29, 29, 31, 0.2);
+    0 4px 16px color-mix(in srgb, currentColor 20%, transparent);
   transition:
     transform var(--dur-fast) var(--spring),
     box-shadow var(--dur-fast) var(--spring),
@@ -380,7 +393,7 @@ h6 {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.12),
     0 1px 2px rgba(0, 0, 0, 0.12),
-    0 2px 8px rgba(29, 29, 31, 0.14);
+    0 2px 8px color-mix(in srgb, currentColor 14%, transparent);
 }
 
 /* tinted 胶囊行动按钮：灰 tint 玻璃 + 文字（系统 tinted 按钮），交互才允许出现 */

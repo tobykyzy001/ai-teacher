@@ -37,22 +37,25 @@
           :collapsed-width="64"
           @update:value="onSelect"
         />
+        <!-- 「继续阅读」不另起一套按钮语言：与上方 4 个导航项同为"图标 + 文字"的行式项，
+             几何逐项对齐（高度 40 / 圆角 8 / 图标盒 24 / 图标中心展开 x=56、收起 x=32），
+             只用分隔线 + 上间距与导航区分组。原先用 n-button(primary) 是第二套样式，
+             玻璃胶囊浮在纯文字项下面，两套质感并置会显得杂乱 -->
         <div
           v-if="showContinue"
           class="continue-wrap"
         >
-          <n-button
-            class="continue-btn"
-            block
-            secondary
-            type="primary"
+          <button
+            class="nav-row continue-row"
+            type="button"
+            title="继续阅读"
             @click="goContinueReading"
           >
-            <n-icon class="continue-icon" :size="20">
-              <ArrowRedoCircleOutline />
-            </n-icon>
-            <span class="continue-label">继续阅读</span>
-          </n-button>
+            <span class="nav-row-icon">
+              <n-icon :size="20"><ArrowRedoCircleOutline /></n-icon>
+            </span>
+            <span class="nav-row-label">继续阅读</span>
+          </button>
         </div>
       </n-layout-sider>
       <!-- 平板区间：自绘 64px 图标栏 -->
@@ -420,39 +423,74 @@ watch(
   font-weight: 600;
 }
 
+/* ---------- 侧栏行式项（继续阅读）----------
+   与 .n-menu-item 同一套几何，保证它看起来就是"列表里的又一项"，而不是另一套控件：
+   - 菜单 padding 12（收起态横向归零）；行高 40；圆角 var(--radius-control)=8
+   - 图标盒 24（= naive maxIconSize），图标 20 居中其中
+   - 左内边距：展开 32（与 naive rootIndent 对齐）→ 图标中心 12+32+12=56
+               收起 20（退到 collapsedWidth/2−12）→ 图标中心 0+20+12=32
+   与导航项的区别只在分隔线 + 顶部间距（表明"这是另一组"），不引入新的材质 */
+.nav-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 40px;
+  margin: 0;
+  padding: 0 0 0 32px;
+  box-sizing: border-box;
+  border: none;
+  border-radius: var(--radius-control);
+  background: none;
+  color: var(--label-2);
+  font-family: inherit;
+  font-size: var(--text-ui);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) ease,
+    color var(--dur-fast) ease,
+    padding-left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.nav-row:hover {
+  background: var(--fill-4);
+  color: var(--accent);
+}
+
+.nav-row-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.nav-row-label {
+  margin-left: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* 继续阅读：与导航列表之间用一条分隔线分组，靠视觉区隔而非换材质 */
 .continue-wrap {
   padding: var(--space-3) var(--space-3) 0;
   border-top: 0.5px solid var(--separator);
   margin-top: var(--space-2);
 }
 
-/* 收起态：文字"继续阅读"瞬间消失，只剩图标（与图标栏其余项同语言）。
-   图标与文字是同一个按钮里的两个节点：展开态只显示文字（保持改动前的样子），
-   收起态只显示图标并让按钮塌成 36×36 的小方块、居中对齐导轨中线，
-   都按 display 切换，不产生中间过渡态 */
-.continue-btn .continue-icon {
+/* 收起态：文字瞬时不显示（与导航项一致），图标退到导轨中线 x=32 */
+.app-sider.collapsed .nav-row {
+  padding-left: 20px;
+  justify-content: flex-start;
+}
+
+.app-sider.collapsed .nav-row-label {
   display: none;
 }
 
 .app-sider.collapsed .continue-wrap {
-  padding: var(--space-3) 0 0;
-  display: flex;
-  justify-content: center;
-}
-
-.app-sider.collapsed .continue-btn.n-button {
-  width: 36px !important;
-  min-width: 36px;
-  padding: 0 !important;
-}
-
-.app-sider.collapsed .continue-btn .continue-label {
-  display: none;
-}
-
-.app-sider.collapsed .continue-btn .continue-icon {
-  display: inline-flex;
-  margin: 0;
+  padding-left: 0;
+  padding-right: 0;
 }
 
 /* ---------- 平板区间 64px 图标栏 ---------- */
