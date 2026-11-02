@@ -52,6 +52,29 @@
       </n-spin>
     </n-card>
 
+    <!-- 外观：全局主题。改这里等于改 <html data-theme>，整个应用（侧栏、各页、
+         阅读正文）立刻换色；阅读页的 Aa 菜单改的是同一个 store，两处永远一致 -->
+    <n-card title="外观" class="about-card">
+      <div class="theme-row" role="group" aria-label="主题">
+        <button
+          v-for="t in THEME_OPTIONS"
+          :key="t.key"
+          class="theme-chip"
+          :class="{ active: themeStore.key === t.key }"
+          :style="{ background: t.swatch, borderColor: t.border }"
+          :title="t.label"
+          :aria-label="t.label"
+          :aria-pressed="themeStore.key === t.key"
+          @click="themeStore.setTheme(t.key)"
+        >
+          <span class="theme-chip-check" aria-hidden="true">✓</span>
+        </button>
+      </div>
+      <div class="muted small theme-hint">
+        当前：{{ currentThemeLabel }}。主题影响整个应用，不只是阅读正文。
+      </div>
+    </n-card>
+
     <n-card title="阅读行为" class="about-card">
       <div class="switch-row">
         <n-switch v-model:value="form.auto_start_reading" :disabled="loading" />
@@ -121,8 +144,16 @@ import {
 import { api, type ConnectionTestResult, type LlmSettings } from "../api";
 import { BUILD_HASH, BUILD_TIME, BUILD_VERSION } from "../build-info";
 import { errText } from "../utils";
+import { useThemeStore } from "../stores/theme";
+import { THEME_OPTIONS } from "../theme-mode";
 
 const message = useMessage();
+
+// 主题：与阅读页 Aa 菜单共用同一个 store
+const themeStore = useThemeStore();
+const currentThemeLabel = computed(
+  () => THEME_OPTIONS.find((t) => t.key === themeStore.key)?.label ?? "纸白",
+);
 
 const form = reactive<LlmSettings>({
   base_url: "",
@@ -189,6 +220,60 @@ async function onTest(): Promise<void> {
 </script>
 
 <style scoped>
+/* ---------- 外观：主题色板 ---------- */
+.theme-row {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.theme-chip {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid;
+  cursor: pointer;
+  /* 选中环用 accent（主题色），未选中只留细边——不用投影，内容层零投影 */
+  outline: none;
+  transition:
+    transform var(--dur-fast) var(--spring),
+    box-shadow var(--dur-fast) ease;
+}
+
+.theme-chip:hover {
+  transform: scale(1.06);
+}
+
+/* 选中态：外圈 accent 描边 + 内侧留白，指示器不压在色块上 */
+.theme-chip.active {
+  box-shadow:
+    0 0 0 2px var(--bg-grouped-2),
+    0 0 0 3.5px var(--accent);
+}
+
+.theme-chip-check {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-footnote);
+  font-weight: 700;
+  /* 勾选色与色块底色反差由主题 accent 决定 */
+  color: var(--accent);
+  mix-blend-mode: difference;
+}
+
+.theme-chip.active .theme-chip-check {
+  display: flex;
+}
+
+.theme-hint {
+  margin-top: var(--space-3);
+}
+
 .tip {
   margin-bottom: var(--space-4);
 }

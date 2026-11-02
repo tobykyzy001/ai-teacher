@@ -1,5 +1,13 @@
 <template>
-  <div class="page reading-page" ref="pageEl" :style="{ '--reading-bg': currentTheme.bg, '--reading-text': currentTheme.text, '--reading-heading': currentTheme.heading, '--reading-body-size': `${fontSize}px`, '--reading-line-height': lineHeight }">
+  <!-- 颜色不再由 JS 传入：正文用全局主题的 CSS 变量（--reading-* 在 style.css 里
+       映射到 --bg-grouped-2 / --label 等），所以切主题只换 <html data-theme>，
+       本组件不用重渲染、也不需要 currentTheme 这类 JS 主题对象。
+       这里只注入阅读页特有的字号与行高。 -->
+  <div
+    class="page reading-page"
+    ref="pageEl"
+    :style="{ '--reading-body-size': `${fontSize}px`, '--reading-line-height': lineHeight }"
+  >
     <div v-if="loading" class="center-box">
       <n-spin size="large" />
     </div>
@@ -99,10 +107,10 @@
                   v-for="t in themes"
                   :key="t.key"
                   class="theme-btn"
-                  :class="{ active: theme === t.key }"
-                  :style="{ background: t.bg, borderColor: t.bg }"
+                  :class="{ active: themeStore.key === t.key }"
+                  :style="{ background: t.swatch, borderColor: t.border }"
                   :title="t.label"
-                  @click="setTheme(t.key)"
+                  @click="themeStore.setTheme(t.key)"
                 />
               </div>
               <div class="font-controls">
@@ -112,14 +120,13 @@
               </div>
             </div>
 
-            <n-card title="原文" class="section reading-card" :style="{ background: currentTheme.cardBg }">
-              <div ref="unitWrap" class="unit-wrap" :style="{ color: currentTheme.text, backgroundColor: currentTheme.cardBg }">
+            <n-card title="原文" class="section reading-card">
+              <div ref="unitWrap" class="unit-wrap">
                 <template v-for="item in segmentBlocks" :key="item.seg.unit.id">
                   <h4
                     v-if="segmentBlocks.length > 1"
                     :id="`unit-${item.seg.unit.id}`"
                     class="seg-title"
-                    :style="{ color: currentTheme.heading }"
                   >
                     {{ item.seg.unit.title }}
                   </h4>
@@ -417,6 +424,8 @@ import {
 } from "naive-ui";
 import { api, type ChapterContent, type ChapterSegment, type ReadingSession, type UnitStatus } from "../api";
 import { commitComposingInput, errText } from "../utils";
+import { useThemeStore } from "../stores/theme";
+import { THEME_OPTIONS } from "../theme-mode";
 
 interface QA {
   q: string;
@@ -456,62 +465,45 @@ const chapter = ref<ChapterContent | null>(null);
 const loading = ref(false);
 const error = ref<string | null>(null);
 
-// —— 阅读偏好（Apple 图书风主题 + 字号）————
+// —— 阅读偏好：主题走全局 store（与设置页同一份），这里只管阅读页特有的字号 ——
+// 说明：主题曾经是阅读页私有的（4 套硬编码色 + 只在正文生效），现已提升为全局：
+// 颜色由 style.css 的 [data-theme] 块驱动，整个应用一起换色；
+// 阅读页的 Aa 菜单只是同一 store 的另一个入口，不再是独立的第二套主题。
 const READING_PREFS_KEY = "ai-teacher:reading-prefs";
 
-interface ThemeDef {
-  key: string;
-  label: string;
-  bg: string;
-  cardBg: string;
-  text: string;
-  heading: string;
-}
+const themeStore = useThemeStore();
+const themes = THEME_OPTIONS;
 
-const themes: ThemeDef[] = [
-  { key: "paper", label: "纸白", bg: "#FFFFFF", cardBg: "#FFFFFF", text: "rgba(0,0,0,0.85)", heading: "rgba(0,0,0,0.87)" },
-  { key: "sepia", label: "暖纸", bg: "#F5EFDC", cardBg: "#F8F3E4", text: "rgba(87,60,38,0.85)", heading: "rgba(70,48,24,0.87)" },
-  { key: "slate", label: "深灰", bg: "#4A4A4C", cardBg: "#3A3A3B", text: "rgba(255,255,255,0.85)", heading: "rgba(255,255,255,0.9)" },
-  { key: "night", label: "夜黑", bg: "#1C1C1E", cardBg: "#2C2C2E", text: "rgba(255,255,255,0.80)", heading: "rgba(255,255,255,0.9)" },
-];
-
-const theme = ref<string>("paper");
 const fontSize = ref<number>(16);
 // 阅读设置折叠：桌面常开；手机默认收起，Aa 圆钮展开（Apple Books aa 菜单）
 const settingsOpen = ref<boolean>(window.innerWidth > 820);
 const lineHeight = 1.75;
 
-function loadPrefs(): { theme?: string; fontSize?: number } {
+// 阅读偏好现在只剩字号；主题由全局 store 负责（见上）
+function loadPrefs(): { fontSize?: number } {
   try {
     return JSON.parse(localStorage.getItem(READING_PREFS_KEY) || "{}") ?? {};
   } catch {
     return {};
   }
 }
-applyPrefs(loadPrefs());
-
-function applyPrefs(p: { theme?: string; fontSize?: number }): void {
-  if (p.theme && themes.some((t) => t.key === p.theme)) theme.value = p.theme!;
-  if (p.fontSize != null) fontSize.value = clampFont(p.fontSize);
-}
 
 function clampFont(n: number): number {
   return Math.min(24, Math.max(13, Math.round(n)));
 }
-
-function setTheme(key: string): void {
-  theme.value = key;
+{
+  const p = loadPrefs();
+  if (p.fontSize != null) fontSize.value = clampFont(p.fontSize);
 }
 
 function adjustFontSize(delta: number): void {
   fontSize.value = clampFont(fontSize.value + delta);
 }
 
-const currentTheme = computed(() => themes.find((t) => t.key === theme.value) ?? themes[0]);
-
-watch([theme, fontSize], ([t, s]) => {
+// 字号持久化：主题不再写这里（store 自己存 THEME_KEY）
+watch(fontSize, (size) => {
   try {
-    localStorage.setItem(READING_PREFS_KEY, JSON.stringify({ theme: t, fontSize: s }));
+    localStorage.setItem(READING_PREFS_KEY, JSON.stringify({ fontSize: size }));
   } catch {
     /* 本地存储不可用时仅本次运行内记忆 */
   }

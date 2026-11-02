@@ -187,13 +187,14 @@ import {
 } from "naive-ui";
 import { h, type Component } from "vue";
 import { appleThemeDark, appleThemeLight } from "./theme";
+import { useThemeStore } from "./stores/theme";
 
-// 跟随系统明暗（HIG Dark Mode：所有颜色提供 light/dark 双值，随外观自动切换）
-const darkMedia = window.matchMedia("(prefers-color-scheme: dark)");
-const isDark = ref(darkMedia.matches);
-darkMedia.addEventListener("change", (e) => {
-  isDark.value = e.matches;
-});
+// 全局主题：颜色由 style.css 的 [data-theme] 块用 CSS 变量驱动（切主题只改
+// <html data-theme>，不重渲染、不换样式表）；这里只读 store 决定 naive-ui
+// 用亮色还是暗色覆盖——naive 组件的配色走 props，吃不到 CSS 变量。
+// 设置页与阅读页的 Aa 都写同一个 store，所以两处入口永远一致。
+const themeStore = useThemeStore();
+const isDark = computed(() => themeStore.isDark);
 
 function icon(c: Component) {
   return () => h(NIcon, null, { default: () => h(c) });
