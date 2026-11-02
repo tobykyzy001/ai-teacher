@@ -18,8 +18,8 @@ export interface ThemeOption {
   swatch: string;
   /** 边框色，深色主题下让色板边界可见 */
   border: string;
-  /** 用图标代替纯色块（"跟随系统"没有单一颜色，不适合做纯色圆点） */
-  icon?: "contrast";
+  /** 该选项前画一道竖分隔线，表示"与前几个不属于同一组" */
+  dividerBefore?: boolean;
 }
 
 export const THEME_OPTIONS: ThemeOption[] = [
@@ -27,15 +27,18 @@ export const THEME_OPTIONS: ThemeOption[] = [
   { key: "sepia", label: "暖纸", swatch: "#F8F2E2", border: "rgba(120,90,55,0.3)" },
   { key: "slate", label: "深灰", swatch: "#48484A", border: "rgba(120,120,128,0.6)" },
   { key: "night", label: "夜黑", swatch: "#1C1C1E", border: "rgba(84,84,88,0.6)" },
-  // 跟随系统没有"一个颜色"可展示：原来用 conic-gradient 拼半黑半白，缩放后有锯齿、
-  // 看着像没画好的圆。改为环形对比图标（ContrastOutline）——半实半空是系统里
-  // "明暗自适应"的通行表示法，矢量也不会有锯齿
+  // 跟随系统 = 半黑半白的圆，直白表示"随系统在明/暗之间切换"。
+  // 用 90° 线性渐变而非 conic-gradient：conic 会切出一个楔形、边缘还带锯齿；
+  // 90° 就是干净的左右对半，圆边由 border-radius 自然抗锯齿。
+  // dividerBefore 在它前面画一道竖线——把它与左侧 4 套纸张主题分成两组，
+  // 说明"这不是第 5 种配色，而是跟随系统明暗"。
   {
     key: "system",
     label: "跟随系统",
-    swatch: "transparent",
+    swatch:
+      "linear-gradient(90deg, #1C1C1E 0%, #1C1C1E 50%, #FFFFFF 50%, #FFFFFF 100%)",
     border: "rgba(60,60,67,0.29)",
-    icon: "contrast",
+    dividerBefore: true,
   },
 ];
 

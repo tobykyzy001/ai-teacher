@@ -56,23 +56,22 @@
          阅读正文）立刻换色；阅读页的 Aa 菜单改的是同一个 store，两处永远一致 -->
     <n-card title="外观" class="about-card">
       <div class="theme-row" role="group" aria-label="主题">
-        <button
-          v-for="t in THEME_OPTIONS"
-          :key="t.key"
-          class="theme-chip"
-          :class="{ active: themeStore.key === t.key }"
-          :style="{ background: t.swatch, borderColor: t.border }"
-          :title="t.label"
-          :aria-label="t.label"
-          :aria-pressed="themeStore.key === t.key"
-          @click="themeStore.setTheme(t.key)"
-        >
-          <!-- 跟随系统没有单一颜色，用环形对比图标表示"明暗自适应" -->
-          <n-icon v-if="t.icon === 'contrast'" class="theme-chip-glyph" :size="22">
-            <ContrastOutline />
-          </n-icon>
-          <span v-else class="theme-chip-check" aria-hidden="true">✓</span>
-        </button>
+        <template v-for="t in THEME_OPTIONS" :key="t.key">
+          <!-- 竖向分隔：左边 4 个是配色主题，右边「跟随系统」跟的是系统明暗，
+               不是第 5 种配色，用一道线把两组分开 -->
+          <span v-if="t.dividerBefore" class="theme-divider" aria-hidden="true" />
+          <button
+            class="theme-chip"
+            :class="{ active: themeStore.key === t.key, split: t.dividerBefore }"
+            :style="{ background: t.swatch, borderColor: t.border }"
+            :title="t.label"
+            :aria-label="t.label"
+            :aria-pressed="themeStore.key === t.key"
+            @click="themeStore.setTheme(t.key)"
+          >
+            <span class="theme-chip-check" aria-hidden="true">✓</span>
+          </button>
+        </template>
       </div>
       <div class="muted small theme-hint">
         当前：{{ currentThemeLabel }}。主题影响整个应用，不只是阅读正文。
@@ -139,14 +138,12 @@ import {
   NCard,
   NForm,
   NFormItem,
-  NIcon,
   NInput,
   NSpace,
   NSpin,
   NSwitch,
   useMessage,
 } from "naive-ui";
-import { ContrastOutline } from "@vicons/ionicons5";
 import { api, type ConnectionTestResult, type LlmSettings } from "../api";
 import { BUILD_HASH, BUILD_TIME, BUILD_VERSION } from "../build-info";
 import { errText } from "../utils";
@@ -259,16 +256,15 @@ async function onTest(): Promise<void> {
     0 0 0 3.5px var(--accent);
 }
 
-/* 跟随系统的图标片：无填充，图标用正文色描边。
-   底色透明 → 在白色卡片上靠 border 划出圆形边界（border 由 :style 的 borderColor 给），
-   颜色用 --label 而非 --label-2：对比图标本身线条细，再淡化就糊了 */
-.theme-chip-glyph {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--label);
+/* 分隔线：与色块等高（44px）并垂直居中，左右等距，
+   让它读起来是"分组"，而不是一根不小心多出来的竖线 */
+.theme-divider {
+  width: 1px;
+  height: 44px;
+  align-self: center;
+  margin: 0 var(--space-1);
+  background: var(--separator);
+  flex-shrink: 0;
 }
 
 .theme-chip-check {
@@ -279,13 +275,24 @@ async function onTest(): Promise<void> {
   justify-content: center;
   font-size: var(--text-footnote);
   font-weight: 700;
-  /* 勾选色与色块底色反差由主题 accent 决定 */
-  color: var(--accent);
-  mix-blend-mode: difference;
+  /* 白色勾 + 深色投影描边：在纯白、纯黑、半黑半白三种底上都读得出来。
+     不能用 mix-blend-mode: difference —— "跟随系统"是左右分割的底，
+     反色后的勾会一半反白一半反黑、从中间断成两截 */
+  color: #fff;
+  text-shadow:
+    0 0 2px rgba(0, 0, 0, 0.55),
+    0 0 1px rgba(0, 0, 0, 0.6);
 }
 
 .theme-chip.active .theme-chip-check {
   display: flex;
+}
+
+/* "跟随系统"的底是左右半黑半白，勾选无论什么颜色都会有一半读不出来
+   （白勾消失在白半、黑勾消失在黑半），硬画就成了断成两截的残字。
+   这一档不画勾，只留外圈 accent 选中环——环是画在色块外的，两半都清楚 */
+.theme-chip.split.active .theme-chip-check {
+  display: none;
 }
 
 .theme-hint {

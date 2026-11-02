@@ -103,15 +103,22 @@
             </button>
             <div v-show="settingsOpen" class="reading-settings">
               <div class="theme-group" role="group" aria-label="主题切换">
-                <button
-                  v-for="t in themes"
-                  :key="t.key"
-                  class="theme-btn"
-                  :class="{ active: themeStore.key === t.key }"
-                  :style="{ background: t.swatch, borderColor: t.border }"
-                  :title="t.label"
-                  @click="themeStore.setTheme(t.key)"
-                />
+                <template v-for="t in themes" :key="t.key">
+                  <!-- 与设置页同一套分隔逻辑：前 4 个是配色主题，
+                       右边「跟随系统」跟的是系统明暗，不是第 5 种配色 -->
+                  <span
+                    v-if="t.dividerBefore"
+                    class="theme-divider"
+                    aria-hidden="true"
+                  />
+                  <button
+                    class="theme-btn"
+                    :class="{ active: themeStore.key === t.key }"
+                    :style="{ background: t.swatch, borderColor: t.border }"
+                    :title="t.label"
+                    @click="themeStore.setTheme(t.key)"
+                  />
+                </template>
               </div>
               <div class="font-controls">
                 <n-button size="small" quaternary @click="adjustFontSize(-1)">A−</n-button>
@@ -1219,6 +1226,17 @@ function renderMarkdown(src: string): string {
 
 .theme-btn:hover {
   transform: scale(1.12);
+}
+
+/* 竖向分隔：把"配色主题"与"跟随系统"分成两组（与设置页同一套语义）。
+   这里色块只有 24px，故用 stretch 与它们等高，而不是照搬设置页的 44px */
+.theme-divider {
+  width: 1px;
+  height: 24px;
+  align-self: center;
+  margin: 0 var(--space-1);
+  background: var(--separator);
+  flex-shrink: 0;
 }
 
 .theme-btn.active {
