@@ -105,6 +105,96 @@
       </n-button>
     </n-card>
 
+    <n-card title="备份与同步" class="about-card">
+      <n-alert type="info" class="tip" :bordered="false">
+        快照式备份：每次同步整包替换，<strong>不做两端的字段合并</strong>。适合"同一时间只在一台设备上学习"；
+        两台设备交叉使用会互相覆盖。凭据只存本机，永不随备份上传。
+      </n-alert>
+
+      <n-form label-placement="top">
+        <n-form-item label="服务器地址">
+          <n-input
+            v-model:value="syncForm.base_url"
+            placeholder="坚果云填 https://dav.jianguoyun.com/dav/"
+          />
+        </n-form-item>
+        <n-form-item label="账号">
+          <n-input v-model:value="syncForm.username" placeholder="坚果云填登录邮箱" />
+        </n-form-item>
+        <n-form-item label="应用专用密码">
+          <n-input
+            v-model:value="syncForm.password"
+            type="password"
+            show-password-on="click"
+            placeholder="坚果云：「账户信息 → 安全选项 → 添加应用密码」生成"
+          />
+        </n-form-item>
+        <n-form-item label="远端目录（可留空）">
+          <n-input v-model:value="syncForm.folder" placeholder="留空则使用 ai-teacher" />
+        </n-form-item>
+      </n-form>
+
+      <div class="switch-row">
+        <n-switch v-model:value="syncForm.enabled" />
+        <div>
+          <div>自动同步</div>
+          <div class="muted small">
+            开启后，答题、复习、领读等写操作完成 10 秒内自动上传进度（约 63KB）；导入或删除书时另传整包（含插图，约 3.4MB）。
+            退出应用前会补传一次。默认关闭。
+          </div>
+        </div>
+      </div>
+
+      <n-space>
+        <n-button type="primary" :loading="syncSaving" @click="onSaveSync">保存</n-button>
+        <n-button :loading="syncTesting" @click="onTestSync">测试连接</n-button>
+        <n-button :loading="syncing" @click="onUpload(false)">备份进度</n-button>
+        <n-button :loading="syncing" @click="onUpload(true)">备份全部</n-button>
+        <n-button :loading="listing" @click="onListRemote">查看远端</n-button>
+      </n-space>
+
+      <n-alert
+        v-if="syncTestError || syncTestResult"
+        class="test-result"
+        :type="syncTestError || syncTestResult?.ok === false ? 'error' : 'success'"
+        :title="syncTestError || syncTestResult?.ok === false ? '连接失败' : '连接成功'"
+      >
+        {{ syncTestError ?? syncTestResult?.message }}
+      </n-alert>
+
+      <div v-if="localStats" class="sync-stats">
+        <div class="about-label">本机当前</div>
+        <div class="muted small">
+          {{ describeStats(localStats.stats) }} · 数据版本 {{ localStats.schema_version }}
+        </div>
+      </div>
+
+      <div v-if="remoteSnapshots.length" class="sync-remote">
+        <div class="about-label">远端快照</div>
+        <div v-for="s in remoteSnapshots" :key="s.name" class="snapshot-row">
+          <div class="snapshot-main">
+            <div class="snapshot-name">{{ s.name }}</div>
+            <div class="muted small">
+              {{ formatSize(s.size) }} · {{ s.modified || "时间未知" }}
+              <template v-if="s.manifest">
+                · {{ s.manifest.includes_books ? "含书籍与插图" : "仅进度" }}
+                · {{ describeStats(s.manifest.db_stats) }}
+              </template>
+              <template v-else> · 无法解析清单</template>
+            </div>
+          </div>
+          <n-button
+            size="small"
+            :disabled="!s.manifest || restoring === s.name"
+            :loading="restoring === s.name"
+            @click="onRestore(s)"
+          >
+            恢复到本机
+          </n-button>
+        </div>
+      </div>
+    </n-card>
+
     <n-card title="关于" class="about-card">
       <div class="app-identity">
         <div class="app-name">AI 伴读</div>
@@ -146,8 +236,16 @@ import {
   useMessage,
 } from "naive-ui";
 import { api, type ConnectionTestResult, type LlmSettings } from "../api";
+import type {
+  BackupStats,
+  LocalStats,
+  RemoteSnapshot,
+  SyncResult,
+  WebDavSettings,
+} from "../api";
 import { BUILD_HASH, BUILD_TIME, BUILD_VERSION } from "../build-info";
 import { errText } from "../utils";
+import { triggerNow } from "../auto-sync";
 import { useThemeStore } from "../stores/theme";
 import { THEME_OPTIONS } from "../theme-mode";
 
@@ -220,6 +318,146 @@ async function onTest(): Promise<void> {
   } finally {
     testing.value = false;
   }
+}
+
+// ---------- WebDAV 备份/同步 ----------
+const syncForm = reactive<WebDavSettings>({
+  enabled: false,
+  base_url: "",
+  username: "",
+  password: "",
+  folder: "",
+});
+const syncSaving = ref(false);
+const syncTesting = ref(false);
+const syncing = ref(false);
+const listing = ref(false);
+const restoring = ref<string | null>(null);
+const syncTestResult = ref<ConnectionTestResult | null>(null);
+const syncTestError = ref<string | null>(null);
+const localStats = ref<LocalStats | null>(null);
+const remoteSnapshots = ref<RemoteSnapshot[]>([]);
+
+async function loadSync(): Promise<void> {
+  try {
+    Object.assign(syncForm, await api.getSyncSettings());
+  } catch (e) {
+    message.error(`加载同步设置失败：${errText(e)}`);
+  }
+  try {
+    localStats.value = await api.getSyncLocalStats();
+  } catch {
+    /* 统计拿不到不影响其他操作 */
+  }
+}
+
+onMounted(loadSync);
+
+async function onSaveSync(): Promise<void> {
+  syncSaving.value = true;
+  try {
+    await api.saveSyncSettings({ ...syncForm });
+    message.success("同步设置已保存");
+    // 刚打开自动同步就试一次，让用户立刻看到是否真的生效
+    if (syncForm.enabled && syncForm.password) triggerNow();
+  } catch (e) {
+    message.error(`保存失败：${errText(e)}`);
+  } finally {
+    syncSaving.value = false;
+  }
+}
+
+async function onTestSync(): Promise<void> {
+  syncTesting.value = true;
+  syncTestResult.value = null;
+  syncTestError.value = null;
+  try {
+    // 先存再测：后端测的是磁盘上的设置
+    await api.saveSyncSettings({ ...syncForm });
+    syncTestResult.value = await api.testSyncConnection({ ...syncForm });
+  } catch (e) {
+    syncTestError.value = errText(e);
+  } finally {
+    syncTesting.value = false;
+  }
+}
+
+async function onUpload(withBooks: boolean): Promise<void> {
+  syncing.value = true;
+  try {
+    await api.saveSyncSettings({ ...syncForm });
+    const r = await api.syncUpload({ ...syncForm }, withBooks);
+    message.success(r.message);
+    // 备份成功后刷新本地统计与远端列表，让用户立刻看到结果
+    localStats.value = await api.getSyncLocalStats();
+    await refreshRemote();
+  } catch (e) {
+    message.error(`备份失败：${errText(e)}`);
+  } finally {
+    syncing.value = false;
+  }
+}
+
+async function onListRemote(): Promise<void> {
+  listing.value = true;
+  try {
+    await api.saveSyncSettings({ ...syncForm });
+    remoteSnapshots.value = await api.syncListRemote({ ...syncForm });
+    if (!remoteSnapshots.value.length) message.info("远端还没有备份");
+  } catch (e) {
+    message.error(`读取远端失败：${errText(e)}`);
+  } finally {
+    listing.value = false;
+  }
+}
+
+async function refreshRemote(): Promise<void> {
+  try {
+    remoteSnapshots.value = await api.syncListRemote({ ...syncForm });
+  } catch {
+    /* 列表刷新失败不打断主流程 */
+  }
+}
+
+async function onRestore(s: RemoteSnapshot): Promise<void> {
+  // 恢复会整包覆盖本机数据，必须二次确认并明确说出"会丢掉什么"
+  const incoming = s.manifest;
+  const current = localStats.value?.stats;
+  const lines = [
+    `即将用远端快照覆盖本机数据，之后本机的学习进度会被替换。`,
+    "",
+    `远端：${incoming ? describeStats(incoming.db_stats) : "内容未知"}`,
+    `本机：${current ? describeStats(current) : "未知"}`,
+    "",
+    `快照时间：${incoming?.created_at ?? s.modified}`,
+    "",
+    `恢复前会自动把本机当前状态另存为 ai_teacher.db.before-restore，恢复错了可以找回。`,
+    `确定继续吗？`,
+  ];
+  if (!window.confirm(lines.join("\n"))) return;
+
+  restoring.value = s.name;
+  try {
+    const r = await api.syncRestore({ ...syncForm }, s.name, true);
+    message.success(r.message);
+    localStats.value = await api.getSyncLocalStats();
+    // 恢复后各页面缓存的数据都过期了，提示用户刷新
+    message.info("数据已替换，请切换到其他页面以加载最新内容", { duration: 5000 });
+  } catch (e) {
+    message.error(`恢复失败：${errText(e)}`);
+  } finally {
+    restoring.value = null;
+  }
+}
+
+function describeStats(s: BackupStats): string {
+  return `${s.books} 本书 · ${s.units} 个单元（已完成 ${s.done_units}）· ${s.attempts} 条答题 · ${s.review_items} 条复习`;
+}
+
+function formatSize(n: number): string {
+  if (n < 1024) return `${n} 字节`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 </script>
 
@@ -354,5 +592,44 @@ async function onTest(): Promise<void> {
   font-weight: 600;
   color: var(--label);
   margin-bottom: var(--space-1);
+}
+
+/* ---------- 备份与同步 ---------- */
+.sync-stats,
+.sync-remote {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--separator);
+}
+
+/* 一条快照：左侧信息、右侧按钮；窄屏自动堆叠，避免按钮被挤成两行 */
+.snapshot-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+}
+
+.snapshot-row + .snapshot-row {
+  border-top: 1px solid var(--separator);
+}
+
+.snapshot-main {
+  min-width: 0;
+}
+
+.snapshot-name {
+  font-size: var(--text-callout);
+  font-weight: 600;
+  color: var(--label);
+  word-break: break-all;
+}
+
+@media (max-width: 820px) {
+  .snapshot-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }
 </style>

@@ -4,9 +4,12 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "./App.vue";
 import { router } from "./router";
 import { installHomeEndKeys } from "./utils";
+import { installAutoSync } from "./auto-sync";
 import "./style.css";
 
 installHomeEndKeys();
+// 自动同步：注册写命令钩子（debounce 10s）+ 退出前 flush；开关在后端判断
+installAutoSync();
 
 // 无标题栏窗口（macOS Overlay 标题栏）的窗口 chrome：把整个窗口的"背景区"都当作标题栏——
 // 单键按下即拖动窗口，顶部标题栏带内双击 = 原生标题栏双击（macOS 缩放 zoom / Win+Linux 最大化）。

@@ -137,15 +137,91 @@ export interface BookDetail {
   chapters: ChapterGroup[]; // 与 units 同一数据源的章分组视图
 }
 
+// ---------- WebDAV 备份/同步 ----------
+//
+// 语义是**快照覆盖**而非双向合并：每次同步整包替换远端/本地，不做字段级 merge。
+// 因此适合"同一时间只在一台设备上学习"，两台设备交叉使用会互相覆盖。
+
+export interface WebDavSettings {
+  enabled: boolean; // 自动同步开关：写操作后 debounce 上传进度包
+  base_url: string; // 如 https://dav.jianguoyun.com/dav/
+  username: string; // 坚果云 = 登录邮箱
+  password: string; // 必须用「应用专用密码」，不是登录密码
+  folder: string; // 远端子目录；留空用默认 ai-teacher
+}
+
+export interface BackupStats {
+  books: number;
+  units: number;
+  attempts: number;
+  review_items: number;
+  done_units: number;
+}
+
+export interface BackupManifest {
+  schema_version: number; // 数据版本；高于当前应用则拒绝恢复
+  app_version: string;
+  created_at: string; // RFC3339
+  device: string;
+  includes_books: boolean;
+  db_stats: BackupStats;
+}
+
+export interface RemoteSnapshot {
+  name: string;
+  size: number;
+  modified: string;
+  manifest: BackupManifest | null; // 解析失败时为 null（界面上标记"未知快照"）
+}
+
+export interface LocalStats {
+  stats: BackupStats;
+  schema_version: number;
+  app_version: string;
+}
+
+export interface SyncResult {
+  ok: boolean;
+  message: string;
+  bytes: number;
+}
+
 // ---------- invoke 封装 ----------
 
 function errMsg(e: unknown): string {
   return typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
 }
 
+/// 会改库的命令：成功后通知自动同步"该传了"。
+/// 只在**写**命令里登记——读命令不触发同步（尤其 list_books 会顺带补建封面写盘，
+/// 若按"有 IO 就传"判断，用户只是看了眼书架就会把远端覆盖掉）。
+const WRITE_COMMANDS = new Set([
+  "save_settings",
+  "import_book",
+  "remove_book",
+  "set_unit_skipped",
+  "set_chapter_skipped",
+  "start_reading",
+  "start_chapter_reading",
+  "generate_quiz",
+  "regenerate_quiz",
+  "submit_answer",
+  "submit_review",
+]);
+
+type SyncHook = () => void;
+let syncHook: SyncHook | null = null;
+
+/// 由自动同步模块注册：写命令成功后调用（内部自行 debounce）。
+export function setWriteHook(fn: SyncHook | null): void {
+  syncHook = fn;
+}
+
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   try {
-    return await invoke<T>(cmd, args);
+    const out = await invoke<T>(cmd, args);
+    if (WRITE_COMMANDS.has(cmd)) syncHook?.();
+    return out;
   } catch (e) {
     throw new Error(errMsg(e));
   }
@@ -218,4 +294,21 @@ export const api = {
       bookId: filter.bookId ?? null,
       unitId: filter.unitId ?? null,
     }),
+
+  // ---------- WebDAV 备份/同步 ----------
+  getSyncSettings: () => call<WebDavSettings>("get_sync_settings"),
+  saveSyncSettings: (settings: WebDavSettings) =>
+    call<void>("save_sync_settings", { settings }),
+  testSyncConnection: (settings: WebDavSettings) =>
+    call<ConnectionTestResult>("test_sync_connection", { settings }),
+  getSyncLocalStats: () => call<LocalStats>("get_sync_local_stats"),
+  // withBooks=true 打整包（含 books/，约 3.4MB）；false 只打进度（约 63KB）
+  syncUpload: (settings: WebDavSettings, withBooks: boolean) =>
+    call<SyncResult>("sync_upload", { settings, withBooks }),
+  syncListRemote: (settings: WebDavSettings) =>
+    call<RemoteSnapshot[]>("sync_list_remote", { settings }),
+  syncRestore: (settings: WebDavSettings, key: string, backupCurrent: boolean) =>
+    call<SyncResult>("sync_restore", { settings, key, backupCurrent }),
+  // 自动同步：有未同步写入时静默上传，返回 null 表示没有要传的
+  syncAutoFlush: () => call<SyncResult | null>("sync_auto_flush"),
 };

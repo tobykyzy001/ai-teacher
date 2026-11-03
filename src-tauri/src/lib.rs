@@ -1,10 +1,16 @@
 mod commands;
 mod config;
-mod db;
 mod ingest;
 mod llm;
-mod models;
 mod scheduler;
+
+// 这三个模块同时被 `tests/` 下的集成测试使用（crate 外部视角），故设为 pub
+pub mod db;
+pub mod models;
+pub mod sync;
+
+pub use db::Db;
+pub use models::WebDavSettings;
 
 use tauri::Manager;
 
@@ -51,6 +57,14 @@ pub fn run() {
             commands::regenerate_quiz,
             commands::get_question,
             commands::list_wrong_questions,
+            commands::get_sync_settings,
+            commands::save_sync_settings,
+            commands::test_sync_connection,
+            commands::get_sync_local_stats,
+            commands::sync_upload,
+            commands::sync_list_remote,
+            commands::sync_restore,
+            commands::sync_auto_flush,
             commands::submit_answer,
             commands::start_review,
             commands::submit_review,

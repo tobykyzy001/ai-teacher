@@ -18,7 +18,19 @@ pub enum DbError {
 
 pub struct Db {
     conn: Mutex<Connection>,
+    /// 自上次同步以来是否有过写操作（脏标记）。只在写方法里置位，读方法不碰，
+    /// 因此"打开书架"这类带副作用的读命令不会误判成"本地有更新"。
+    dirty: std::sync::atomic::AtomicBool,
 }
+
+/// 数据 schema 版本，写进 SQLite 的 `PRAGMA user_version`。
+///
+/// 用途：备份包 manifest 里记这个号，恢复前比对，避免"旧版应用存的快照灌进新版应用"
+/// ——本项目 schema 只有 `CREATE TABLE IF NOT EXISTS`、没有 ALTER 迁移，缺列的表会被
+/// 静默跳过，随后查询直接 `no such column` 崩在启动阶段。
+///
+/// 铁律：**只增不减**。加表/加列时把它 +1。
+pub const SCHEMA_VERSION: i64 = 1;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS books (
@@ -203,8 +215,79 @@ impl Db {
     fn init(conn: Connection) -> Result<Self, DbError> {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
+        // schema 版本号写进 user_version：老库（user_version=0）在这里被标成当前版本。
+        // 注意它只用于备份包兼容性判断，不驱动任何迁移逻辑。
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Ok(Self {
             conn: Mutex::new(conn),
+            dirty: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+
+    /// 标记"自上次同步以来有写入"。所有 `insert_*`/`update_*`/`upsert_*`/`delete_*` 走它。
+    /// 上传失败时命令层也会调它把标记放回去，供下次重试。
+    pub fn mark_dirty(&self) {
+        self.dirty
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// 取走脏标记（读后清零）。同步成功后调用，供 debounce 逻辑判断"要不要传"。
+    pub fn take_dirty(&self) -> bool {
+        self.dirty
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// 恢复数据库内容后重置脏标记：刚灌进来的数据就是"已同步"的状态。
+    pub fn clear_dirty(&self) {
+        self.dirty
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// 本库的 schema 版本（`PRAGMA user_version`）。
+    pub fn schema_version(&self) -> Result<i64, DbError> {
+        self.with_conn(|c| Ok(c.pragma_query_value(None, "user_version", |r| r.get(0))?))
+    }
+
+    /// 关键表行数摘要，用于备份 manifest 与恢复前对比。
+    pub fn stats(&self) -> Result<crate::models::BackupStats, DbError> {
+        self.with_conn(|c| {
+            let one = |sql: &str| -> Result<i64, DbError> {
+                Ok(c.query_row(sql, [], |r| r.get(0))?)
+            };
+            Ok(crate::models::BackupStats {
+                books: one("SELECT COUNT(*) FROM books")?,
+                units: one("SELECT COUNT(*) FROM units")?,
+                attempts: one("SELECT COUNT(*) FROM attempts")?,
+                review_items: one("SELECT COUNT(*) FROM review_items")?,
+                done_units: one("SELECT COUNT(*) FROM units WHERE status = 'done'")?,
+            })
+        })
+    }
+
+    /// 用另一个数据库文件的内容**热覆盖**当前连接（不重启应用）。
+    /// 走 SQLite 的 backup API，比"替换文件 + 重启"安全：旧连接始终指向同一个 inode。
+    pub fn restore_from_file(&self, src: &Path) -> Result<(), DbError> {
+        let mut conn = self.conn.lock().map_err(|_| DbError::LockPoisoned)?;
+        conn.restore(rusqlite::DatabaseName::Main, src, None::<fn(rusqlite::backup::Progress)>)
+            .map_err(DbError::Sqlite)?;
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        drop(conn);
+        self.clear_dirty();
+        Ok(())
+    }
+
+    /// 把当前库导出成一个**一致**的副本文件（`VACUUM INTO`）。
+    /// 不用直接拷文件：写事务中间拷会拿到半个库。VACUUM INTO 同时重建了页，
+    /// 顺带抹掉删除留下的空洞（实测 233472 → 229376 字节）。
+    pub fn snapshot_to(&self, dest: &Path) -> Result<(), DbError> {
+        if dest.exists() {
+            std::fs::remove_file(dest)?;
+        }
+        self.with_conn(|c| {
+            // VACUUM INTO 的路径要当 SQL 字面量传入，单引号需转义
+            let escaped = dest.to_string_lossy().replace('\'', "''");
+            c.execute_batch(&format!("VACUUM INTO '{escaped}'"))?;
+            Ok(())
         })
     }
 
@@ -214,6 +297,18 @@ impl Db {
     ) -> Result<T, DbError> {
         let conn = self.conn.lock().map_err(|_| DbError::LockPoisoned)?;
         f(&conn)
+    }
+
+    /// 写操作的入口：与 `with_conn` 相同，但先把脏标记置位。
+    /// 所有改库的方法都走这里，读方法走 `with_conn`——这个区分是自动同步的判断依据，
+    /// 别把有副作用的读命令（如 `list_books` 补建封面）错标成写。
+    fn with_write<T>(
+        &self,
+        f: impl FnOnce(&Connection) -> Result<T, DbError>,
+    ) -> Result<T, DbError> {
+        let out = self.with_conn(f)?;
+        self.mark_dirty();
+        Ok(out)
     }
 
     /// 数据库文件所在目录（= app_data_dir；resolve 数据路径用）。内存库返回 None。
@@ -234,7 +329,7 @@ impl Db {
         format: &str,
         added_at: &str,
     ) -> Result<i64, DbError> {
-        self.with_conn(|c| {
+        self.with_write(|c| {
             c.execute(
                 "INSERT INTO books (title, source_path, format, added_at) VALUES (?1, ?2, ?3, ?4)",
                 params![title, source_path, format, added_at],
@@ -269,7 +364,7 @@ impl Db {
 
     /// 更新已入库图书的源文件路径（仅 UPDATE，不改表结构）。
     pub fn update_book_source_path(&self, book_id: i64, source_path: &str) -> Result<(), DbError> {
-        self.with_conn(|c| {
+        self.with_write(|c| {
             c.execute(
                 "UPDATE books SET source_path = ?1 WHERE id = ?2",
                 params![source_path, book_id],
@@ -333,7 +428,7 @@ impl Db {
     }
 
     pub fn delete_book(&self, id: i64) -> Result<(), DbError> {
-        self.with_conn(|c| {
+        self.with_write(|c| {
             c.execute("DELETE FROM books WHERE id = ?1", params![id])?;
             Ok(())
         })
@@ -348,7 +443,7 @@ impl Db {
         title: &str,
         content_path: &str,
     ) -> Result<i64, DbError> {
-        self.with_conn(|c| {
+        self.with_write(|c| {
             c.execute(
                 "INSERT INTO units (book_id, idx, title, content_path) VALUES (?1, ?2, ?3, ?4)",
                 params![book_id, idx, title, content_path],
@@ -416,7 +511,7 @@ impl Db {
         status: &str,
         mastery: Option<f64>,
     ) -> Result<(), DbError> {
-        self.with_conn(|c| {
+        self.with_write(|c| {
             c.execute(
                 "UPDATE units SET status = ?2, mastery = ?3 WHERE id = ?1",
                 params![id, status, mastery],
@@ -457,7 +552,7 @@ impl Db {
         knowledge_point: &str,
     ) -> Result<i64, DbError> {
         let options_json = serde_json::to_string(options).unwrap_or_else(|_| "[]".to_string());
-        self.with_conn(|c| {
+        self.with_write(|c| {
             c.execute(
                 "INSERT INTO questions (unit_id, qtype, stem, options_json, answer, explanation, knowledge_point)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -481,7 +576,7 @@ impl Db {
     /// 重新出题前整批退役：把活跃边界推到现有最后一题之后；旧题不删除，
     /// 错题本、复习项、作答记录继续引用它们，list/count/latest_attempts 只看新批次。
     pub fn retire_questions(&self, unit_id: i64, at: &str) -> Result<(), DbError> {
-        self.with_conn(|c| {
+        self.with_write(|c| {
             c.execute(
                 "INSERT INTO quiz_batches (unit_id, active_from_id, retired_at)
                  VALUES (?1, (SELECT COALESCE(MAX(id), 0) + 1 FROM questions WHERE unit_id = ?1), ?2)
@@ -540,7 +635,7 @@ impl Db {
         correct: bool,
         graded_at: &str,
     ) -> Result<(), DbError> {
-        self.with_conn(|c| {
+        self.with_write(|c| {
             c.execute(
                 "INSERT INTO attempts (question_id, given_answer, correct, graded_at) VALUES (?1, ?2, ?3, ?4)",
                 params![question_id, given_answer, correct as i64, graded_at],
@@ -585,7 +680,7 @@ impl Db {
 
     /// 标记"无需掌握"时清除该单元的全部复习项；取消标记后由领读登记幂等重建。
     pub fn delete_review_items_for_unit(&self, unit_id: i64) -> Result<(), DbError> {
-        self.with_conn(|c| {
+        self.with_write(|c| {
             c.execute(
                 "DELETE FROM review_items WHERE unit_id = ?1",
                 params![unit_id],
@@ -606,7 +701,7 @@ impl Db {
         due_date: &str,
         created_from: &str,
     ) -> Result<i64, DbError> {
-        self.with_conn(|c| {
+        self.with_write(|c| {
             c.execute(
                 "INSERT INTO review_items (unit_id, knowledge_point, question_id, ease, interval_days, reps, due_date, created_from)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -645,7 +740,7 @@ impl Db {
 
     /// 答错后重置该复习项：reps 归零、间隔 1 天、明天到期。
     pub fn reset_review_item_wrong(&self, id: i64, due_date: &str) -> Result<(), DbError> {
-        self.with_conn(|c| {
+        self.with_write(|c| {
             c.execute(
                 "UPDATE review_items SET reps = 0, interval_days = 1, due_date = ?2, created_from = 'wrong' WHERE id = ?1",
                 params![id, due_date],
@@ -662,7 +757,7 @@ impl Db {
         interval_days: i64,
         due_date: &str,
     ) -> Result<(), DbError> {
-        self.with_conn(|c| {
+        self.with_write(|c| {
             c.execute(
                 "UPDATE review_items SET reps = ?2, ease = ?3, interval_days = ?4, due_date = ?5 WHERE id = ?1",
                 params![id, reps, ease, interval_days, due_date],
@@ -745,7 +840,7 @@ impl Db {
         summary: &str,
         updated_at: &str,
     ) -> Result<(), DbError> {
-        self.with_conn(|c| {
+        self.with_write(|c| {
             c.execute(
                 "INSERT OR REPLACE INTO unit_summaries (unit_id, summary, updated_at) VALUES (?1, ?2, ?3)",
                 params![unit_id, summary, updated_at],
@@ -798,7 +893,7 @@ impl Db {
     ) -> Result<(), DbError> {
         let kps_json =
             serde_json::to_string(knowledge_points).unwrap_or_else(|_| "[]".to_string());
-        self.with_conn(|c| {
+        self.with_write(|c| {
             c.execute(
                 "INSERT OR REPLACE INTO chapter_explanations (first_unit_id, explanation, knowledge_points, updated_at) VALUES (?1, ?2, ?3, ?4)",
                 params![first_unit_id, explanation, kps_json, updated_at],
@@ -826,7 +921,7 @@ impl Db {
     // ---------- learning log ----------
 
     pub fn insert_log(&self, date: &str, kind: &str) -> Result<(), DbError> {
-        self.with_conn(|c| {
+        self.with_write(|c| {
             c.execute(
                 "INSERT INTO learning_log (logged_date, kind) VALUES (?1, ?2)",
                 params![date, kind],

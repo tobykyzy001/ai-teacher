@@ -63,11 +63,11 @@ fn row_to_unit(row: &UnitRow) -> Unit {
 // ---------- 业务实现（可在无 Tauri 运行时的测试中直接调用） ----------
 
 pub fn load_settings(app_data_dir: &Path) -> LlmSettings {
-    ConfigStore::new(config_path(app_data_dir)).load()
+    ConfigStore::<LlmSettings>::new(config_path(app_data_dir)).load()
 }
 
 pub fn save_settings_to(app_data_dir: &Path, settings: &LlmSettings) -> Result<(), String> {
-    ConfigStore::new(config_path(app_data_dir)).save(settings)
+    ConfigStore::<LlmSettings>::new(config_path(app_data_dir)).save(settings)
 }
 
 /// 前一单元上下文：优先用已存的单元摘要，否则取上一单元正文前 300 字符。
@@ -1132,6 +1132,122 @@ pub fn list_wrong_questions(
     unit_id: Option<i64>,
 ) -> Result<Vec<WrongQuestion>, String> {
     list_wrong_questions_impl(&state.db, book_id, unit_id)
+}
+
+// ---------- WebDAV 备份/同步 ----------
+//
+// 语义是**快照覆盖**，不是合并：webdav.json 里的凭据永不入包、永不上传。
+// 恢复走 db.restore_from_file 的 backup API 热覆盖（不换文件、不重启）。
+
+#[tauri::command]
+pub fn get_sync_settings(state: State<'_, AppState>) -> Result<WebDavSettings, String> {
+    Ok(crate::sync::load_webdav_settings(&state.app_data_dir))
+}
+
+#[tauri::command]
+pub fn save_sync_settings(
+    state: State<'_, AppState>,
+    settings: WebDavSettings,
+) -> Result<(), String> {
+    crate::sync::save_webdav_settings(&state.app_data_dir, &settings)
+}
+
+/// 试连接：建目录 + 写探测文件 + 读回。只做 PROPFIND 不够，很多服务器能读不能写。
+#[tauri::command]
+pub async fn test_sync_connection(settings: WebDavSettings) -> Result<ConnectionTestResult, String> {
+    Ok(match crate::sync::test_connection(&settings).await {
+        Ok(msg) => ConnectionTestResult { ok: true, message: msg },
+        Err(e) => ConnectionTestResult {
+            ok: false,
+            message: e,
+        },
+    })
+}
+
+/// 本地当前状态（备份前/恢复前的对比基准）
+#[tauri::command]
+pub fn get_sync_local_stats(state: State<'_, AppState>) -> Result<LocalStats, String> {
+    crate::sync::local_stats(&state.db)
+}
+
+/// 手动备份。`with_books=true` 时打整包（含 books/，约 3.4MB），否则只打进度（约 63KB）。
+#[tauri::command]
+pub async fn sync_upload(
+    state: State<'_, AppState>,
+    settings: WebDavSettings,
+    with_books: bool,
+) -> Result<SyncResult, String> {
+    let r = if with_books {
+        crate::sync::upload_full(&state.db, &state.app_data_dir, &settings).await
+    } else {
+        crate::sync::upload_db_only(&state.db, &state.app_data_dir, &settings).await
+    };
+    match r {
+        Ok((message, bytes)) => Ok(SyncResult {
+            ok: true,
+            message,
+            bytes,
+        }),
+        Err(e) => Err(e),
+    }
+}
+
+/// 列远端快照（带 manifest 预览，供恢复前选哪一份）
+#[tauri::command]
+pub async fn sync_list_remote(settings: WebDavSettings) -> Result<Vec<RemoteSnapshot>, String> {
+    crate::sync::list_remote(&settings).await
+}
+
+/// 从远端恢复。`backup_current` 为真时先把当前库存成本地副本
+/// （`ai_teacher.db.before-restore`），恢复错了还能找回来。
+#[tauri::command]
+pub async fn sync_restore(
+    state: State<'_, AppState>,
+    settings: WebDavSettings,
+    key: String,
+    backup_current: bool,
+) -> Result<SyncResult, String> {
+    match crate::sync::download_and_restore(
+        &state.db,
+        &state.app_data_dir,
+        &settings,
+        &key,
+        backup_current,
+    )
+    .await
+    {
+        Ok(message) => Ok(SyncResult {
+            ok: true,
+            message,
+            bytes: 0,
+        }),
+        Err(e) => Err(e),
+    }
+}
+
+/// 自动同步：本地有未同步的写操作时静默上传进度包。
+/// 返回 None 表示"没什么要传的"（脏标记本来就是清的）。
+#[tauri::command]
+pub async fn sync_auto_flush(state: State<'_, AppState>) -> Result<Option<SyncResult>, String> {
+    let settings = crate::sync::load_webdav_settings(&state.app_data_dir);
+    if !settings.enabled || !settings.is_configured() {
+        return Ok(None);
+    }
+    if !state.db.take_dirty() {
+        return Ok(None);
+    }
+    match crate::sync::upload_db_only(&state.db, &state.app_data_dir, &settings).await {
+        Ok((message, bytes)) => Ok(Some(SyncResult {
+            ok: true,
+            message,
+            bytes,
+        })),
+        Err(e) => {
+            // 上传失败要把脏标记放回去，下次还能重试
+            state.db.mark_dirty();
+            Err(e)
+        }
+    }
 }
 
 #[cfg(test)]

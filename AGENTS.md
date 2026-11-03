@@ -20,6 +20,7 @@
 - 已知坑 9（iOS 真机）：**`tauri ios dev` 每次运行会按 tauri.conf 重新同步 gen/apple 工程**（手改 pbxproj 会被回写），签名配置必须落在 `src-tauri/tauri.ios.conf.json`（平台专用覆盖，桌面端不读；**gitignored 不入库**，新克隆按 `tauri.ios.conf.example.json` 模板填好后改名使用），内含 iOS 专用 identifier（**不要用 `com.example.*`**，太泛会被苹果拒收："not available"）+ `bundle.iOS.developmentTeam`（首次需在 Xcode GUI 选一次 Team 生成 Apple Development 证书，此后 CLI 走 `xcodebuild -allowProvisioningUpdates` 自动建描述文件）；免费证书真机首启需在手机上「设置→通用→VPN与设备管理」信任开发者；`vite.config.ts` 已支持 `TAURI_DEV_HOST`（真机 dev 从局域网加载所必需，官方模板标配）；`src-tauri/Info.ios.plist`（会被 iOS 打包自动 merge，加的是 NSLocalNetworkUsageDescription——dev 包从局域网 dev server 加载需「本地网络」权限）；**用户日常使用用 `pnpm tauri ios build` 出 IPA 安装（内嵌 dist 离线可用），`ios dev` 仅开发迭代用**
 - iOS 命令：`PATH="$PWD/scripts/ios-init-stubs:$PATH" pnpm tauri ios init --ci`（首次生成 gen/apple，gitignored 不入库）；`pnpm tauri ios dev "iPhone Duo"`（模拟器：vite + cargo + simctl 部署）；`pnpm tauri ios build` → `xcrun devicectl device install app --device <UDID> gen/apple/build/arm64/ai-teacher.ipa` → `xcrun devicectl device process launch --device <UDID> <bundle.id>`（id 见本机 `src-tauri/tauri.ios.conf.json`，不入库）；容器写文件：`devicectl device copy to --domain-type appDataContainer --domain-identifier <id> --source f --destination "Library/Application Support/<id>/f"`；Duo 双屏截图默认截到黑屏的 LCD-1，加 `--display 1` 才是主屏；**iOS 27.1 runtime 只建得动 iPhone Duo 机型，普通 iPhone 模拟器改用本机自带的 iOS 27.0 runtime**：`xcrun simctl create "iPhone 16 Pro" com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro com.apple.CoreSimulator.SimRuntime.iOS-27-0`（`simctl runtime list` 可见 27.0/27.1 两个 Ready 镜像）
 - 后端：Rust（tauri 2, rusqlite, reqwest, zip+quick-xml, pdf-extract），SQLite + 文件存储，数据全部在用户 app_data_dir
+- 已知坑 10（WebDAV 备份/同步，`src-tauri/src/sync.rs`）：语义是**快照覆盖**，不是双向合并——别按"云同步"宣传，两台设备交叉使用会互相覆盖（真合并需 UUID 主键迁移 + 全表 updated_at + 删除墓碑，成本见 ROADMAP）。**分层上传**：写操作后只传 db（`VACUUM INTO` 快照后 zip，实测真实库 233KB → 62KB），只有导入/删书才传 books/（约 3.4MB）；整包同传会让"答一题"走一遍 3.4MB。**恢复走 `rusqlite` 的 `backup` API 热覆盖**（`Db::restore_from_file`），不换文件不重启——`Db` 的 Connection 是常驻的，换文件会让旧连接指向被替换的 inode。**不能用文件 mtime 判新旧**：`list_books` 会顺带 `ensure_book_cover` 写盘，用户只是看了眼书架就会把远端覆盖掉；判断依据是 `Db` 的脏标记（所有写方法走 `with_write`、读方法走 `with_conn`，这个区分就是自动同步的准绳）。**备份包必须带 manifest.json 的 schema_version**（`PRAGMA user_version`，见 `db::SCHEMA_VERSION`，加表加列时 +1）：本项目 schema 只有 `CREATE TABLE IF NOT EXISTS` 没有 ALTER 迁移，旧版应用的包灌进新版会缺列 → `no such column` 崩在启动；恢复前比对，高于当前版本直接拒绝。**凭据绝不入包**：`webdav.json`（含应用专用密码）与 `config.json`（含 api_key）都不打包、不上传，有单测 `webdav_settings_never_include_secrets_in_backup` 守着。坚果云要求**应用专用密码**（不是登录密码），免费版约 600 请求/30 分钟，按 debounce 10s 的用量远低于上限。真实凭据只走环境变量跑 `tests/webdav_live.rs` / `webdav_real_data.rs`（未设置则自动跳过），**不要写进代码或文档**
 
 ## 常用命令
 
@@ -45,16 +46,18 @@ cd src-tauri && cargo test  # 后端全部测试（离线、无需 Tauri 运行�
 
 ```
 src/                  # Vue 前端（views/ 七个页面，stores/ 仅 library 缓存）
-src/api.ts            # 前后端契约
+src/api.ts            # 前后端契约（含 WRITE_COMMANDS 白名单，自动同步靠它触发）
+src/auto-sync.ts      # 自动同步调度：写命令成功后 debounce 10s 上传，退出前 flush
 src-tauri/src/
-├── lib.rs            # 入口：注册 dialog 插件、AppState、27 个命令
+├── lib.rs            # 入口：注册 dialog 插件、AppState、35 个命令
 ├── commands.rs       # Tauri 命令薄壳 + 可测试的 *_impl 业务逻辑
 ├── models.rs         # API 类型（serde snake_case）
 ├── db.rs             # SQLite 迁移与查询（仅建表不 ALTER；确需修改已有表的列时，必须在提交说明中注明原因；含 learning_log/unit_summaries/chapter_explanations/quiz_batches；测试用 open_in_memory）
 ├── config.rs         # app_data_dir/config.json（api_key、auto_start_reading、disable_thinking 等，勿入库勿进 git；新字段靠 serde default 兼容旧文件）
 ├── ingest.rs         # 书籍解析与 1500–3000 字单元切分；EPUB 插图抽到 books/<id>/images/，正文插 `![alt](文件名)` 标记段，前端原位渲染
 ├── llm.rs            # OpenAI 兼容客户端 + 中文 prompt + mock 模式（长文本输出走 SSE 流式；disable_thinking 开关注入 OpenAI 兼容的 reasoning_effort=none/medium，模型 400/422 拒绝时去掉参数重试一次并留一次性提示 take_thinking_notice；思考内容剥离见 AnswerFilter / strip_thinking）
-└── scheduler.rs      # SM-2 调度（基线间隔 [1,2,4,7,15,30]，ease 2.5/≥1.3）
+├── scheduler.rs      # SM-2 调度（基线间隔 [1,2,4,7,15,30]，ease 2.5/≥1.3）
+└── sync.rs           # WebDAV 备份/同步（RemoteStore trait + WebDavStore；见已知坑 10）
 fixtures/demo-book.md # 端到端与测试用的示例书（3 章）
 ```
 
