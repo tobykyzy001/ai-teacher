@@ -107,7 +107,8 @@
 
     <n-card title="备份与同步" class="about-card">
       <n-alert type="info" class="tip" :bordered="false">
-        快照式备份：每次同步整包替换，<strong>不做两端的字段合并</strong>。适合"同一时间只在一台设备上学习"；
+        支持任意 WebDAV 服务（坚果云、Nextcloud、群晖、TeraCloud、InfiniCLOUD…）。
+        快照式备份：每次同步整包替换，<strong>不做两端的字段合并</strong>，适合"同一时间只在一台设备上学习"；
         两台设备交叉使用会互相覆盖。凭据只存本机，永不随备份上传。
       </n-alert>
 
@@ -115,18 +116,18 @@
         <n-form-item label="服务器地址">
           <n-input
             v-model:value="syncForm.base_url"
-            placeholder="坚果云填 https://dav.jianguoyun.com/dav/"
+            placeholder="https://dav.example.com/dav/"
           />
         </n-form-item>
         <n-form-item label="账号">
-          <n-input v-model:value="syncForm.username" placeholder="坚果云填登录邮箱" />
+          <n-input v-model:value="syncForm.username" placeholder="账号（多为邮箱）" />
         </n-form-item>
         <n-form-item label="应用专用密码">
           <n-input
             v-model:value="syncForm.password"
             type="password"
             show-password-on="click"
-            placeholder="坚果云：「账户信息 → 安全选项 → 添加应用密码」生成"
+            placeholder="多数服务需用「应用专用密码」而非登录密码"
           />
         </n-form-item>
         <n-form-item label="远端目录（可留空）">
@@ -139,8 +140,8 @@
         <div>
           <div>自动同步</div>
           <div class="muted small">
-            开启后，答题、复习、领读等写操作完成 10 秒内自动上传进度（约 63KB）；导入或删除书时另传整包（含插图，约 3.4MB）。
-            退出应用前会补传一次。默认关闭。
+            开启后，答题、复习、领读等写操作完成 10 秒内自动上传进度；导入或删除书时另传整包（含书籍正文与插图）。
+            进度包随答题量增长，整包则取决于书的大小。退出应用前会补传一次。默认关闭。
           </div>
         </div>
       </div>
@@ -484,8 +485,16 @@ function formatSize(n: number): string {
     box-shadow var(--dur-fast) ease;
 }
 
-.theme-chip:hover {
+.theme-chip:hover:not(:active) {
   transform: scale(1.06);
+}
+
+/* 色板本身没有底色可压暗，按压反馈只能靠"压薄"：缩得比 hover 更狠一档。
+   选中环保持不变，所以点已选中的色板也有可见反馈。 */
+.theme-chip:active {
+  transform: scale(0.92);
+  transition:
+    transform 220ms var(--spring);
 }
 
 /* 选中态：外圈 accent 描边 + 内侧留白，指示器不压在色块上 */

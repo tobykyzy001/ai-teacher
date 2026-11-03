@@ -2,8 +2,11 @@
 //!
 //! 设计要点（都是踩过的坑，别随手改）：
 //!
-//! 1. **分层上传**：db 约 63KB（压缩后）、books/ 约 3.4MB。写操作后只传 db；
-//!    只有导入/删书才碰 books。整包同传的话答一题就走 3.4MB，网盘和网络都扛不住。
+//! 1. **分层上传**：db 随答题量增长（几十 KB 到数 MB 量级）、books/ 随书的大小而定
+//!    （可能远大于 db）。写操作后只传 db；只有导入/删书才碰 books。
+//!    整包同传的话，每答一题都要把全部书籍正文重传一遍，网络和网盘都扛不住。
+//!    具体字节数**不要写死在注释或界面里**——它取决于题库、作答记录、讲解长度与书的大小，
+//!    一律由运行时如实测量（`human_size` / `SyncResult.bytes`）。
 //! 2. **一致性快照**：用 `VACUUM INTO` 而不是直接拷文件——写事务中间拷会拿到半个库。
 //! 3. **schema 版本**：备份包里的 manifest 记 `schema_version`，恢复前比对。
 //!    本项目 schema 没有 ALTER 迁移，旧包灌进新版会 "no such column" 崩在启动。
@@ -32,9 +35,15 @@ const ENTRY_DB: &str = "ai_teacher.db";
 /// 实测偏移仅 30 字节，8KB 绰绰有余（留足余量给未压缩的 JSON）。
 const MANIFEST_PROBE_BYTES: u64 = 8 * 1024;
 
-/// 坚果云免费版限制 600 请求/30 分钟（付费 1500）。一次同步 = PROPFIND + PUT = 2 个请求，
-/// 按"答一题写 5 处、debounce 10s"的用量远低于上限。这里只做文档性提示，不做客户端限流。
-pub const JIANGUOYUN_HOST: &str = "dav.jianguoyun.com";
+/// 服务端限流/配额状态码：各家 WebDAV 的额度自己定、**不会**在响应里告知，
+/// 所以客户端不猜测限额（别写死某家厂商的数字），只在真的被拒时如实报给用户。
+fn throttling_hint(status: u16) -> Option<&'static str> {
+    match status {
+        429 => Some("（服务端限流：请调大同步间隔，或稍后再试）"),
+        507 => Some("（服务端存储空间不足：请清理网盘空间）"),
+        _ => None,
+    }
+}
 
 // ---------- 远端存储抽象 ----------
 
@@ -45,7 +54,7 @@ trait RemoteStore {
     fn put(&self, key: &str, bytes: Vec<u8>) -> impl std::future::Future<Output = Result<(), String>>;
     fn get(&self, key: &str) -> impl std::future::Future<Output = Result<Vec<u8>, String>>;
     /// 只取前 `len` 字节（HTTP Range）。用于读 zip 头部的 manifest，
-    /// 避免为了 300 字节的清单把 3.4MB 整包拉下来。
+    /// 避免为了几百字节的清单把整个备份包拉下来。
     fn get_prefix(
         &self,
         key: &str,
@@ -66,7 +75,7 @@ pub struct RemoteEntry {
 
 pub struct WebDavStore {
     client: reqwest::Client,
-    /// 目录 URL，末尾无斜杠，如 https://dav.jianguoyun.com/dav/ai-teacher
+    /// 目录 URL，末尾无斜杠，如 https://dav.example.com/dav/ai-teacher
     dir_url: String,
     username: String,
     password: String,
@@ -134,8 +143,11 @@ impl WebDavStore {
         match resp.status().as_u16() {
             207 | 200 => Ok(Some(resp.text().await.map_err(|e| format!("读取响应失败：{e}"))?)),
             404 => Ok(None),
-            401 => Err("WebDAV 认证失败：请检查账号与应用专用密码（坚果云需用「应用密码」，不是登录密码）".to_string()),
-            s => Err(format!("WebDAV 请求失败（HTTP {s}）")),
+            401 => Err("WebDAV 认证失败：请检查账号与密码；多数服务（含坚果云、Nextcloud）要求用「应用专用密码」而非登录密码".to_string()),
+            s => Err(format!(
+                "WebDAV 请求失败（HTTP {s}）{}",
+                throttling_hint(s).unwrap_or("")
+            )),
         }
     }
 }
@@ -153,11 +165,13 @@ impl RemoteStore for WebDavStore {
         if resp.status().is_success() {
             Ok(())
         } else {
-            Err(format!(
-                "上传 {key} 失败（HTTP {}，{} 字节）",
-                resp.status().as_u16(),
-                len
-            ))
+            {
+                let s = resp.status().as_u16();
+                Err(format!(
+                    "上传 {key} 失败（HTTP {s}，{len} 字节）{}",
+                    throttling_hint(s).unwrap_or("")
+                ))
+            }
         }
     }
 
@@ -168,9 +182,10 @@ impl RemoteStore for WebDavStore {
             .await
             .map_err(|e| format!("下载失败：{e}"))?;
         if !resp.status().is_success() {
+            let s = resp.status().as_u16();
             return Err(format!(
-                "下载 {key} 失败（HTTP {}）",
-                resp.status().as_u16()
+                "下载 {key} 失败（HTTP {s}）{}",
+                throttling_hint(s).unwrap_or("")
             ));
         }
         let b = resp.bytes().await.map_err(|e| format!("读取内容失败：{e}"))?;
@@ -211,7 +226,7 @@ impl RemoteStore for WebDavStore {
             .map_err(|e| format!("创建远端目录失败：{e}"))?;
         match resp.status().as_u16() {
             200 | 201 | 405 => Ok(()),
-            401 => Err("WebDAV 认证失败：请检查账号与应用专用密码".to_string()),
+            401 => Err("WebDAV 认证失败：请检查账号与密码".to_string()),
             s => Err(format!("创建远端目录失败（HTTP {s}）")),
         }
     }
@@ -273,7 +288,8 @@ fn parse_prop_list(xml: &str) -> Vec<RemoteEntry> {
 
 // ---------- 备份包 ----------
 
-/// 打包内容的选择：是否附带 books/（纯进度备份 63KB / 完整备份 3.4MB）
+/// 打包内容的选择：是否附带 books/。
+/// 纯进度备份随答题量增长；完整备份在此基础上再加全部书籍正文与插图。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackMode {
     /// 只打 db：换机后进度、错题、复习队列都在，但插图与原书副本缺失
@@ -516,7 +532,7 @@ pub async fn upload_full(
     upload(db, app_data_dir, settings, PackMode::WithBooks).await
 }
 
-/// 上传备份（仅 db，约 63KB）。用于写操作后的自动同步。
+/// 上传备份（仅 db，体积随答题量增长）。用于写操作后的自动同步。
 pub async fn upload_db_only(
     db: &Db,
     app_data_dir: &Path,
@@ -679,19 +695,7 @@ pub async fn test_connection(settings: &WebDavSettings) -> Result<String, String
     // 清理探测文件（失败不影响结论）
     let _ = store.get(probe).await;
 
-    let host = settings
-        .base_url
-        .trim()
-        .trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .split('/')
-        .next()
-        .unwrap_or("");
-    let mut msg = "连接成功：可读写".to_string();
-    if host.contains(JIANGUOYUN_HOST) {
-        msg.push_str("（坚果云免费版限制约 600 请求/30 分钟，本应用按需同步远低于此）");
-    }
-    Ok(msg)
+    Ok("连接成功：可读写".to_string())
 }
 
 // ---------- 工具 ----------
@@ -1042,6 +1046,21 @@ mod tests {
         assert_eq!(list.len(), 1, "应只保留 zip：{list:?}");
         assert_eq!(list[0].name, "ai-teacher-db.zip");
         assert_eq!(list[0].size, 63003);
+    }
+
+    #[test]
+    fn no_vendor_or_size_hardcoding_in_ui_facing_strings() {
+        // 回归护栏：界面/提示文案里不能出现具体字节数或厂商限额。
+        // 体积随答题量与书的大小变化，厂商限额服务器也不会告知，写死会误导用户。
+        let msg = "连接成功：可读写".to_string();
+        assert!(!msg.contains("请求"), "连接提示不该提请求配额：{msg}");
+        assert!(!msg.contains("坚果云"), "连接提示不该点名厂商：{msg}");
+
+        // 限流提示只按状态码给，不猜额度
+        assert!(throttling_hint(429).unwrap().contains("限流"));
+        assert!(throttling_hint(507).unwrap().contains("空间"));
+        assert!(throttling_hint(200).is_none());
+        assert!(throttling_hint(404).is_none());
     }
 
     #[test]

@@ -97,11 +97,12 @@ pub struct ConnectionTestResult {
 pub struct WebDavSettings {
     /// 是否启用自动同步（写操作后 debounce 上传）；默认关闭，避免用户无预期地占带宽
     pub enabled: bool,
-    /// 服务器根地址，如 https://dav.jianguoyun.com/dav/
+    /// 服务器根地址，如 https://dav.example.com/dav/。**不预填任何厂商**——
+    /// 任何标准 WebDAV 端点都可用，预填某一家会让人误以为只支持它。
     pub base_url: String,
-    /// 账户名（坚果云 = 登录邮箱）
+    /// 账户名（多数服务是登录邮箱）
     pub username: String,
-    /// 应用专用密码（坚果云「安全选项 → 添加应用密码」生成，**不是登录密码**）
+    /// 应用专用密码/令牌。多数服务（坚果云、Nextcloud 等）要求用应用密码，**不是登录密码**
     pub password: String,
     /// 服务器上的子目录名，留空则用默认 REMOTE_DIR
     pub folder: String,
@@ -111,8 +112,7 @@ impl Default for WebDavSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            // 预填坚果云地址：国内最常用的 WebDAV 服务，用户只需补账号与应用密码
-            base_url: "https://dav.jianguoyun.com/dav/".to_string(),
+            base_url: String::new(),
             username: String::new(),
             password: String::new(),
             folder: String::new(),

@@ -144,9 +144,9 @@ export interface BookDetail {
 
 export interface WebDavSettings {
   enabled: boolean; // 自动同步开关：写操作后 debounce 上传进度包
-  base_url: string; // 如 https://dav.jianguoyun.com/dav/
-  username: string; // 坚果云 = 登录邮箱
-  password: string; // 必须用「应用专用密码」，不是登录密码
+  base_url: string; // 任意标准 WebDAV 端点，如 https://dav.example.com/dav/
+  username: string; // 账号（多为邮箱）
+  password: string; // 多数服务需用「应用专用密码」，不是登录密码
   folder: string; // 远端子目录；留空用默认 ai-teacher
 }
 
@@ -302,7 +302,7 @@ export const api = {
   testSyncConnection: (settings: WebDavSettings) =>
     call<ConnectionTestResult>("test_sync_connection", { settings }),
   getSyncLocalStats: () => call<LocalStats>("get_sync_local_stats"),
-  // withBooks=true 打整包（含 books/，约 3.4MB）；false 只打进度（约 63KB）
+  // withBooks=true 连 books/ 一起打（体积取决于书）；false 只打进度（随答题量增长）
   syncUpload: (settings: WebDavSettings, withBooks: boolean) =>
     call<SyncResult>("sync_upload", { settings, withBooks }),
   syncListRemote: (settings: WebDavSettings) =>

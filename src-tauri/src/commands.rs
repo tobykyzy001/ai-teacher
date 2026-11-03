@@ -1170,7 +1170,7 @@ pub fn get_sync_local_stats(state: State<'_, AppState>) -> Result<LocalStats, St
     crate::sync::local_stats(&state.db)
 }
 
-/// 手动备份。`with_books=true` 时打整包（含 books/，约 3.4MB），否则只打进度（约 63KB）。
+/// 手动备份。`with_books=true` 时连 books/ 一起打（体积取决于书），否则只打进度（随答题量增长）。
 #[tauri::command]
 pub async fn sync_upload(
     state: State<'_, AppState>,
