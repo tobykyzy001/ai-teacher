@@ -1277,6 +1277,226 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
+// ---------- 正文净化：剥离书自带的习题与答案键 ----------
+
+/// 习题区块的标题关键词（命中即整块丢弃，含其下的题干与答案键）。
+/// 注意 `练习` 与 `动手` 前缀要覆盖"### 练习：为你的模型填表""### 第 5 章动手任务"这类写法。
+const EXERCISE_HEADING_WORDS: &[&str] = &[
+    "思考题",
+    "练习题",
+    "习题",
+    "作业",
+    "自测",
+    "动手",
+    "课后题",
+    "面试题",
+    "练习",
+];
+
+/// 答案键/提示行的行首前缀（`> 提示：…`、`> 参考答题要点的关键词：`、`答案：…` 等）。
+const ANSWER_KEY_PREFIXES: &[&str] = &[
+    "提示：",
+    "提示:",
+    "答案：",
+    "答案:",
+    "参考答案：",
+    "参考答案:",
+    "参考答题要点",
+];
+
+fn is_heading(line: &str) -> bool {
+    let t = line.trim_start();
+    let hashes = t.chars().take_while(|c| *c == '#').count();
+    (1..=6).contains(&hashes) && t[hashes..].starts_with(' ')
+}
+
+fn heading_level(line: &str) -> usize {
+    line.trim_start().chars().take_while(|c| *c == '#').count()
+}
+
+/// 标题是否"像一个习题块"，命中才剥。
+///
+/// 两道闸门：
+/// 1. 标题文字命中习题关键词；
+/// 2. 该标题下的内容里**没有更深的子标题**——有子标题说明它是个容器
+///    （如 `## 附录 F 动手任务总表与 3 天速成路线` 下面挂着 F.1/F.2，
+///    整块剥掉会把附录的学习路线一起丢掉），这类不剥，交给子标题各自判断。
+fn looks_like_exercise_block(lines: &[&str], idx: usize, level: usize) -> bool {
+    let line = lines[idx];
+    if !EXERCISE_HEADING_WORDS.iter().any(|w| line.contains(w)) {
+        return false;
+    }
+    for next in &lines[idx + 1..] {
+        if is_heading(next) {
+            return heading_level(next) <= level;
+        }
+    }
+    // 到文末都没有更深标题：当成叶子习题块
+    true
+}
+
+/// 行首（去掉 Markdown 引用符 `>` 与前导空白后）是否以答案键前缀开头。
+fn is_answer_key_line(line: &str) -> bool {
+    let mut t = line.trim_start();
+    while let Some(rest) = t.strip_prefix('>') {
+        t = rest.trim_start();
+    }
+    // 允许 `**提示：**` 这类加粗写法
+    let t = t.trim_start_matches('*').trim_start();
+    ANSWER_KEY_PREFIXES.iter().any(|p| t.starts_with(p))
+}
+
+/// 剥掉书里自带的习题区块与答案键，返回"只含知识正文"的文本。
+///
+/// 存在的理由：出题 prompt 把整个单元正文喂给模型，而不少教辅型书把
+/// `### 第 1 章思考题` 连同 `> 提示：…`（逐题答案）写在同一段正文里。
+/// 模型于是直接把书上原题抄成测验题、又把答案键改写成"参考答案"——既泄题，
+/// 又产出多小问合一的开放讨论题（判分只能二元，误判率极高）。
+///
+/// 规则：
+/// - 命中习题关键词的标题，从该标题起丢弃到下一个**同级或更高级**的标题为止
+///   （整块丢，含题干与紧随其后的答案键列表）；
+/// - 独立的答案键行（`> 提示：…`）单独丢弃，即便它被切块切到了另一个单元里；
+/// - 围栏代码块（``` / ~~~）**整块原样保留**，块内出现的"提示：""思考题"不算数；
+/// - 其余正文一律不动。
+pub fn strip_exercises(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut kept: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut skip_until_level: Option<usize> = None;
+    // 围栏代码块：Some(fence) 表示当前在代码块内，值是开围栏的原样文本（``` / ~~~ 前缀）
+    let mut in_fence: Option<&str> = None;
+
+    for (idx, line) in lines.iter().copied().enumerate() {
+        let trimmed = line.trim_start();
+        // 代码块优先：进入/离开围栏时一律原样保留，块内不做任何剥离判断
+        let fence = if trimmed.starts_with("```") {
+            Some("```")
+        } else if trimmed.starts_with("~~~") {
+            Some("~~~")
+        } else {
+            None
+        };
+        if in_fence.is_some() || fence.is_some() {
+            if let Some(open) = in_fence {
+                // 闭合围栏（同种符号即可，语言标记可有可无）
+                if fence == Some(open) {
+                    in_fence = None;
+                }
+            } else {
+                in_fence = fence;
+            }
+            // 位于习题块内的代码块同样丢弃，避免把习题里的示例代码带进正文
+            if skip_until_level.is_none() {
+                kept.push(line);
+            }
+            continue;
+        }
+
+        if is_heading(line) {
+            let level = heading_level(line);
+            // 进入新标题：先判断是否退出跳过状态
+            if let Some(target) = skip_until_level {
+                if level <= target {
+                    skip_until_level = None;
+                }
+            }
+            if skip_until_level.is_none() && looks_like_exercise_block(&lines, idx, level) {
+                skip_until_level = Some(level);
+                continue;
+            }
+            if skip_until_level.is_some() {
+                continue;
+            }
+            kept.push(line);
+            continue;
+        }
+        if skip_until_level.is_some() {
+            continue;
+        }
+        if is_answer_key_line(line) {
+            continue;
+        }
+        kept.push(line);
+    }
+
+    // 收尾：去掉因剥离产生的连续空行与首尾空白
+    let mut out = String::with_capacity(text.len());
+    let mut blank_run = 0usize;
+    for line in kept {
+        if line.trim().is_empty() {
+            blank_run += 1;
+            if blank_run > 1 || out.is_empty() {
+                continue;
+            }
+        } else {
+            blank_run = 0;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    let out = out.trim_end().to_string();
+    strip_leading_orphan_questions(&out)
+}
+
+/// 行首是否为编号条目（`1. …`、`1、…`、`1)…`、`（1）…`）。
+/// 刻意要求编号后跟空白或顿号，好让 `9.3 专线接入` 这类无 `#` 的小节号不被误判。
+fn numbered_item(line: &str) -> bool {
+    let t = line.trim_start();
+    let t = t.strip_prefix('（').unwrap_or(t);
+    let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digits == 0 {
+        return false;
+    }
+    let rest = &t[digits..];
+    if let Some(after) = rest.strip_prefix('）') {
+        return !after.trim_start().is_empty();
+    }
+    match rest.chars().next() {
+        Some('.') | Some(')') => rest.chars().nth(1).map(|c| c.is_whitespace()).unwrap_or(false),
+        Some('、') | Some('．') => true,
+        _ => false,
+    }
+}
+
+/// 剥掉单元开头"无标题的编号题目块"——切块正好落在习题中间时会产生的孤悬题干。
+///
+/// 场景：《PD 分离实战与原理》第 1 章把 `### 第 1 章思考题` 留在上一单元末尾，
+/// 三条题干连同 `> 提示：` 落到下一单元开头。标题已被剥掉，题干本身却还留着，
+/// 于是它们继续冒充"学习内容"进 prompt。
+///
+/// 判定刻意保守：**开头连续 ≥2 条**编号条目才丢；只有 1 条不动（可能是正文的正常编号列表）。
+fn strip_leading_orphan_questions(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut first = 0usize;
+    while first < lines.len() && lines[first].trim().is_empty() {
+        first += 1;
+    }
+    // 以标题开头的单元不是孤悬题干
+    if first >= lines.len() || is_heading(lines[first]) {
+        return text.to_string();
+    }
+    let mut end = first;
+    let mut count = 0usize;
+    while end < lines.len() {
+        if numbered_item(lines[end]) {
+            count += 1;
+            end += 1;
+            // 条目之间允许夹空行
+            while end < lines.len() && lines[end].trim().is_empty() {
+                end += 1;
+            }
+        } else {
+            break;
+        }
+    }
+    if count < 2 {
+        return text.to_string();
+    }
+    // 丢掉开头这批条目，保留其后内容
+    let rest = lines[end..].join("\n");
+    rest.trim_start_matches('\n').to_string()
+}
+
 // ---------- 章节切分为学习单元 ----------
 
 pub fn chunk_chapters(chapters: Vec<Chapter>) -> Vec<UnitDraft> {
@@ -1644,6 +1864,163 @@ mod tests {
 
     fn s(n: usize) -> String {
         "字".repeat(n)
+    }
+
+
+    #[test]
+    fn strip_exercises_removes_orphan_question_list_at_unit_start() {
+        // 切块落在习题中间：标题留在上一单元，三条题干落到本单元开头（真实形态）
+        let text = "1. 第一种方式叫什么？\n2. 你会优先保 TTFT 还是 ITL？\n                    3. 调度器能完全消除吗？\n                    ## 1.3 chunked prefill\n                    正文，讲切块。";
+        let out = strip_exercises(text);
+        assert!(!out.contains("第一种方式叫什么"), "孤悬题干应被剥掉：{out}");
+        assert!(!out.contains("完全消除吗"), "{out}");
+        assert!(out.contains("## 1.3 chunked prefill"));
+        assert!(out.contains("正文，讲切块。"));
+    }
+
+    #[test]
+    fn strip_exercises_keeps_single_leading_numbered_item() {
+        // 只有一条编号条目时不动：可能只是正文开头的正常编号段落
+        let text = "1. 第一步：先算 KV。\n\n然后按这个数推带宽。";
+        assert_eq!(strip_exercises(text), text);
+    }
+
+    #[test]
+    fn strip_exercises_keeps_numbered_items_under_heading() {
+        // 以标题开头的单元不受孤悬规则影响（正文里的编号列表照旧保留）
+        let text = "## 3.2 KV 公式\n\n1. 先算每层 KV。\n2. 再乘层数。\n\n结论。";
+        assert_eq!(strip_exercises(text), text);
+    }
+
+    #[test]
+    fn strip_exercises_orphan_key_lines_before_question_list() {
+        // 先出现答案键、再出现题干（顺序颠倒时也要清掉开头这一批）
+        let text = "> 提示：第 1 题：批内拖慢。\n                    1. 问甲？\n2. 问乙？\n                    ## 1.3 下一节\n正文。";
+        let out = strip_exercises(text);
+        assert!(!out.contains("问甲"), "{out}");
+        assert!(!out.contains("提示："), "{out}");
+        assert!(out.contains("## 1.3 下一节"));
+    }
+
+    #[test]
+    fn strip_exercises_removes_exercise_block_and_answer_key() {
+        // 真实形态：书把「第 1 章思考题」+ `> 提示：`（逐题答案）写在正文里
+        let text = "## 1.2 打架的三种方式\n\
+                    正文一段，讲三种方式。\n\
+                    ### 第 1 章思考题\n\
+                    1. 第一种方式叫什么？\n\
+                    2. 你会优先保 TTFT 还是 ITL？\n\
+                    > 提示：第 1 题：批内拖慢。第 2 题：保 ITL 烧 decode 大 batch。\n\
+                    ## 1.3 chunked prefill\n\
+                    正文二段，讲切块。";
+        let out = strip_exercises(text);
+        assert!(out.contains("## 1.2 打架的三种方式"));
+        assert!(out.contains("正文一段"));
+        assert!(out.contains("## 1.3 chunked prefill"));
+        assert!(out.contains("正文二段"));
+        // 习题题干、标题、答案键全部消失
+        assert!(!out.contains("思考题"), "习题标题应被剥掉：{out}");
+        assert!(!out.contains("第一种方式叫什么"), "习题题干应被剥掉：{out}");
+        assert!(!out.contains("提示："), "答案键应被剥掉：{out}");
+        assert!(!out.contains("保 ITL 烧 decode 大 batch"), "答案内容应被剥掉：{out}");
+    }
+
+    #[test]
+    fn strip_exercises_handles_orphan_answer_key() {
+        // 切块把「思考题」标题留在上一单元、题干与提示落在本单元头部的真实情形
+        let text = "> 提示：第 1 题：prefill 1 次 + decode 399 次。\n\
+                    ## 1.3 chunked prefill\n\
+                    正文，讲切块与 O(N²)。";
+        let out = strip_exercises(text);
+        assert!(!out.contains("提示："), "孤立答案键应被剥掉：{out}");
+        assert!(out.contains("## 1.3 chunked prefill"));
+        assert!(out.contains("O(N²)"));
+    }
+
+    #[test]
+    fn strip_exercises_keeps_normal_blockquotes_and_code() {
+        // 只剥答案键前缀的引用块；`> 本章学习目标：…` 与代码块里的内容一律保留
+        let text = "> 本章学习目标：建立物理直觉。\n\
+                    ## 3.1 KV 公式\n\
+                    ```text\n\
+                    > 提示：这是代码块里的示例，不是答案键\n\
+                    ```\n\
+                    正文。";
+        let out = strip_exercises(text);
+        assert!(out.contains("本章学习目标"), "普通引用块不该被剥：{out}");
+        assert!(
+            out.contains("这是代码块里的示例"),
+            "代码块内容不该被剥：{out}"
+        );
+    }
+
+    #[test]
+    fn strip_exercises_respects_heading_levels() {
+        // 同级或更高级标题结束习题块
+        let text = "### 思考题\n\
+                    1. 问题甲？\n\
+                    2. 问题乙？\n\
+                    ### 下一节\n\
+                    正文。";
+        let out = strip_exercises(text);
+        assert!(!out.contains("问题甲"), "{out}");
+        assert!(!out.contains("问题乙"), "{out}");
+        assert!(out.contains("### 下一节"));
+        assert!(out.contains("正文。"));
+    }
+
+    #[test]
+    fn strip_exercises_keeps_container_block_with_subheadings() {
+        // 带子节的内容容器不整体剥掉：`## 附录 F 动手任务总表与 3 天速成路线` 下面挂着 F.1/F.2，
+        // 整块剥会把附录的学习路线一起丢掉；只剥叶子级的任务清单，路线本体保留
+        let text = "## 附录 F 动手任务总表与 3 天速成路线\n\
+                    本附录把全书的动手任务汇总成一张清单。\n\
+                    ### F.1 全书动手任务清单\n\
+                    | # | 任务 |\n\
+                    ### F.2 3 天速成路线\n\
+                    **第 1 天：把账算清**\n\
+                    - 上午：读导读。";
+        let out = strip_exercises(text);
+        assert!(out.contains("## 附录 F 动手任务总表与 3 天速成路线"), "{out}");
+        assert!(out.contains("本附录把全书的动手任务汇总"), "{out}");
+        assert!(!out.contains("F.1 全书动手任务清单"), "叶子任务清单应剥掉：{out}");
+        assert!(out.contains("### F.2 3 天速成路线"), "学习路线必须保留：{out}");
+        assert!(out.contains("上午：读导读"), "{out}");
+    }
+
+    #[test]
+    fn strip_exercises_drops_multiple_exercise_headings() {
+        // 一本书里「本节思考题（3.3）」「本节思考题（3.4）」各成一块
+        let text = "## 3.3 X\n\
+                    正文甲。\n\
+                    ### 本节思考题（3.3）\n\
+                    1. 问甲？\n\
+                    ## 3.4 Y\n\
+                    正文乙。\n\
+                    ### 练习：为你的模型填表\n\
+                    把下表抄下来。\n\
+                    ## 3.5 Z\n\
+                    正文丙。";
+        let out = strip_exercises(text);
+        assert!(out.contains("正文甲"));
+        assert!(out.contains("正文乙"));
+        assert!(out.contains("正文丙"));
+        assert!(!out.contains("问甲"), "{out}");
+        assert!(!out.contains("把下表抄下来"), "练习块应被剥掉：{out}");
+    }
+
+    #[test]
+    fn strip_exercises_keeps_text_without_exercises() {
+        let text = "## 1.1 一节\n\n纯正文，无习题。\n\n## 1.2 二节\n\n更多正文。";
+        assert_eq!(strip_exercises(text), text);
+    }
+
+    #[test]
+    fn strip_exercises_collapses_blank_runs() {
+        let text = "正文一。\n\n\n\n### 思考题\n\n1. 问？\n\n\n正文二。";
+        let out = strip_exercises(text);
+        assert!(!out.contains("思考题"));
+        assert!(!out.contains("\n\n\n"), "连续空行应收敛：{out:?}");
     }
 
     #[test]

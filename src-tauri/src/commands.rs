@@ -38,6 +38,20 @@ fn read_unit_content(db: &Db, unit: &UnitRow) -> Result<String, String> {
     std::fs::read_to_string(&p).map_err(|e| format!("无法读取单元内容：{e}"))
 }
 
+/// 喂给 LLM 做「出题 / 提炼知识点 / 写摘要」的正文：先剥掉书自带的习题区块与答案键
+/// （见 `ingest::strip_exercises`）。阅读页展示、领读、答疑仍用完整正文，不动。
+///
+/// 剥离后若正文被剥空（整单元就是习题，如"面试自测 10 道题"），退回原文——
+/// 空输入只会让模型瞎编，不如让它基于原文提炼。
+fn read_unit_content_for_llm(db: &Db, unit: &UnitRow) -> Result<String, String> {
+    let raw = read_unit_content(db, unit)?;
+    let stripped = ingest::strip_exercises(&raw);
+    if stripped.trim().chars().count() < 200 {
+        return Ok(raw);
+    }
+    Ok(stripped)
+}
+
 fn question_to_public(q: &QuestionRow) -> QuizQuestion {
     QuizQuestion {
         id: q.id,
@@ -309,8 +323,18 @@ async fn ensure_unit_registered(
         db.update_unit_progress(unit.id, UnitStatus::Reading.as_str(), unit.mastery)
             .map_err(|e| e.to_string())?;
     }
+    // 知识点与摘要都只基于净化后的正文：书自带的思考题与 `> 提示：`（答案键）
+    // 曾把"考点"污染成三条要点的拼接句，也让摘要变成对习题的复述
+    let llm_content = {
+        let stripped = ingest::strip_exercises(content);
+        if stripped.trim().chars().count() < 200 {
+            content.to_string()
+        } else {
+            stripped
+        }
+    };
     if !db.has_review_items(unit.id).map_err(|e| e.to_string())? {
-        let knowledge_points = llm::knowledge_points(settings, content).await?;
+        let knowledge_points = llm::knowledge_points(settings, &llm_content).await?;
         let due = scheduler::due_date(today(), 1);
         for kp in &knowledge_points {
             db.insert_review_item(
@@ -331,7 +355,7 @@ async fn ensure_unit_registered(
         .map_err(|e| e.to_string())?
         .is_none()
     {
-        match llm::summarize(settings, content).await {
+        match llm::summarize(settings, &llm_content).await {
             Ok(summary) => {
                 let updated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
                 if let Err(e) = db.upsert_unit_summary(unit.id, &summary, &updated_at) {
@@ -472,7 +496,8 @@ async fn generate_and_store_questions(
         .get_unit(unit_id)
         .map_err(|e| e.to_string())?
         .ok_or("未找到该单元")?;
-    let content = read_unit_content(db, &unit)?;
+    // 出题只喂净化后的正文：书上自带的思考题与提示（答案键）不能进 prompt
+    let content = read_unit_content_for_llm(db, &unit)?;
     let knowledge_points = db
         .knowledge_points_of_unit(unit_id)
         .map_err(|e| e.to_string())?;
@@ -1287,6 +1312,51 @@ mod tests {
 
     fn opts(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn quiz_content_excludes_book_exercises_and_answer_key() {
+        std::env::set_var("AI_TEACHER_MOCK_LLM", "1");
+        // 教辅型书的真实形态：正文里带着「思考题」和 `> 提示：`（逐题答案）。
+        // 若把这段原样喂给出题，模型会直接抄题、并把答案键改写成语义单一的"参考答案"。
+        let dir = temp_dir("quiz-strip-exercises");
+        let mut content = String::from("## 1.2 打架的三种方式\n\n正文讲三种冲突：批内拖慢、排队、并行度耦合。\n");
+        content.push_str(&"补充正文，说明两阶段对 GPU 的口味不同。".repeat(70));
+        content.push_str(
+            "\n### 第 1 章思考题\n\
+             1. 这三条冲突里，唯一能用调度器压住的是哪一条？\n\
+             2. 你会优先保 TTFT 还是 ITL？\n\
+             > 提示：第 1 题：批内拖慢。第 2 题：保 ITL 烧 decode 大 batch。\n\
+             ## 1.3 chunked prefill\n\
+             正文讲切块与 ITL 上限。\n",
+        );
+        let file = dir.join("unit_0.txt");
+        std::fs::write(&file, &content).unwrap();
+        let db = Db::open_in_memory().unwrap();
+        let book_id = db
+            .insert_book("测试书", "/tmp/测试书.md", "md", "2026-10-06")
+            .unwrap();
+        let unit_id = db
+            .insert_unit(book_id, 0, "第一章", file.to_string_lossy().as_ref())
+            .unwrap();
+
+        let unit = db.get_unit(unit_id).unwrap().unwrap();
+        let for_llm = read_unit_content_for_llm(&db, &unit).unwrap();
+        // 净化后的正文里不能再出现书上的题目与答案键
+        assert!(!for_llm.contains("思考题"), "习题标题不该进 prompt：{for_llm}");
+        assert!(!for_llm.contains("你会优先保 TTFT"), "原题题干不该进 prompt");
+        assert!(!for_llm.contains("提示："), "答案键不该进 prompt");
+        assert!(!for_llm.contains("保 ITL 烧 decode 大 batch"), "答案内容不该进 prompt");
+        // 知识正文必须保留
+        assert!(for_llm.contains("批内拖慢"));
+        assert!(for_llm.contains("## 1.3 chunked prefill"));
+
+        // 展示用的正文保持原样：阅读页仍要看到完整单元（含习题）
+        let shown = read_unit_content(&db, &unit).unwrap();
+        assert!(shown.contains("思考题"), "阅读页应保留完整正文");
+        assert!(shown.contains("提示："));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
