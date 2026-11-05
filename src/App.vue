@@ -109,7 +109,7 @@
            窗口拖动/双击缩放统一由 main.ts 按"背景区"判定（非按钮/输入/正文），无需额外拖动层 -->
       <button
         v-if="!isMobile && !isTablet"
-        class="edge-fab"
+        class="edge-fab mat-press glass-control"
         type="button"
         :style="{ left: siderHidden ? '16px' : '204px' }"
         :title="siderHidden ? '展开菜单栏' : '收起菜单栏'"
@@ -134,7 +134,7 @@
           <polyline points="17,6 11,12 17,18" />
         </svg>
       </button>
-      <nav v-if="isMobile && !isReadingRoute" class="tab-bar">
+      <nav v-if="isMobile && !isReadingRoute" class="tab-bar glass-chrome">
         <button
           v-for="item in menuOptions"
           :key="item.key"
@@ -452,8 +452,14 @@ watch(
     padding-left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.nav-row:hover {
+.nav-row:hover:not(:active) {
   background: var(--fill-4);
+  color: var(--accent);
+}
+
+/* 与侧栏导航项同一套按压语言（选中胶囊会被压暗一档） */
+.nav-row:active {
+  background: var(--fill-2);
   color: var(--accent);
 }
 
@@ -531,17 +537,35 @@ watch(
   background: none;
   color: var(--label-2);
   cursor: pointer;
-  transition: background-color var(--dur-fast) ease;
   width: 100%;
+  transition:
+    background-color 80ms linear,
+    color 80ms linear,
+    transform 220ms var(--spring);
 }
 
-.rail-item:hover {
+.rail-item:hover:not(:active) {
   background: var(--fill-4);
 }
 
+/* 导轨项与 Tab 项同一套按压契约：圆角块压暗一档，不做玻璃 */
 .rail-item.active {
   background: var(--accent-fill);
   color: var(--accent);
+}
+
+/* 顺序要紧：未选中项按下压暗一档；已选中项本就带 accent-fill，
+   再压一档才能看出"按到了" */
+.rail-item:active {
+  transform: scale(0.96);
+}
+
+.rail-item:active:not(.active) {
+  background: var(--fill-2);
+}
+
+.rail-item.active:active {
+  background: var(--fill-1);
 }
 
 .rail-item.continue {
@@ -600,23 +624,34 @@ watch(
   justify-content: center;
   line-height: 1;
   color: var(--label-2);
-  background: var(--glass-sheen), var(--glass-bg);
-  -webkit-backdrop-filter: blur(20px) saturate(170%);
-  backdrop-filter: blur(20px) saturate(170%);
-  border: none;
-  box-shadow:
-    var(--glass-rim),
-    0 1px 6px rgba(0, 0, 0, 0.1);
   outline: none;
   cursor: pointer;
   user-select: none;
+  /* ⚠ 材质（底/模糊/边缘/投影）与按压反馈**一律不在这里写**：
+     本文件的 scoped 规则带 [data-v-*]，特异性与全局 .mat-press:active 相同，
+     谁后注入谁赢 —— 在这里重复声明一份材质，就等于把全局按压态盖掉，
+     "点了没反应"就是这么来的。材质只在 style.css 定义一次，这里只管几何与位置。
+     唯一必须本地覆盖的是 left：它要跟侧栏同缓动，且本规则特异性足以压掉
+     .mat-press 的 transition，所以两条一起写全。 */
   transition:
     left 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-    background 0.15s,
-    color 0.15s;
+    background-color 80ms linear,
+    color 80ms linear,
+    box-shadow 80ms linear,
+    transform 80ms var(--spring);
 }
 
-.edge-fab:hover,
+.edge-fab:active {
+  color: var(--accent);
+  transition:
+    left 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    background-color 220ms var(--spring),
+    color 80ms linear,
+    box-shadow 220ms var(--spring),
+    transform 220ms var(--spring);
+}
+
+.edge-fab:hover:not(:active),
 .edge-fab:focus-visible {
   color: var(--accent);
 }
@@ -662,11 +697,14 @@ watch(
   align-items: stretch;
   border-radius: var(--radius-pill);
   overflow: hidden;
-  background: var(--glass-sheen), var(--glass-bg);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-  border: none;
-  box-shadow: var(--glass-rim), var(--glass-drop);
+  /* 材质来自类 .glass-chrome（大面档：背后是整屏滚动内容，模糊拉满）。
+     这里只补它自己没有的投影——玻璃条是"浮在内容之上的整条"，用中档投影；
+     .glass-chrome 默认只给边缘、不带投影。 */
+  box-shadow:
+    var(--mat-specular),
+    var(--mat-shade),
+    var(--mat-edge),
+    var(--mat-float-md);
 }
 
 .tab-item {
@@ -685,7 +723,17 @@ watch(
   min-width: 0;
   /* Apple 规范：可点触控区 ≥44pt */
   min-height: var(--hit);
-  transition: color var(--dur-fast) var(--spring);
+  /* Tab 项不铺玻璃（它坐在玻璃条上，再叠一层玻璃只会发灰发浑）；
+     按压反馈只做底色 + 颜色，和整条 chrome 一起构成"按下去"的反馈 */
+  transition:
+    color 80ms linear,
+    background-color 80ms linear,
+    transform 220ms var(--spring);
+}
+
+.tab-item:active:not(.active) {
+  background-color: var(--fill-3);
+  border-radius: var(--radius-pill);
 }
 
 .tab-item.active {
@@ -695,7 +743,7 @@ watch(
   border-radius: var(--radius-pill);
   margin: 6px;
   padding: 3px 0 1px;
-  box-shadow: var(--glass-highlight);
+  box-shadow: var(--mat-specular);
 }
 
 .tab-item.continue {

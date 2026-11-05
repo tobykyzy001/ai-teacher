@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>glass harness · mobile frame</title>
+    <!--
+      为什么需要这层"套框"：
+
+      macOS 上的 headless Edge（--headless=old）有一个**最小布局视口宽度 ~492px**。
+      传 --window-size=390,844 时，截图 PNG 确实是 390x844，但 resizes 之后
+      window.innerWidth = 492 —— 页面按 492 排版，再被裁到 390 宽，右侧内容（底部
+      Tab 栏第 4 项、正文右边）就被切掉了。看起来像应用溢出，其实是截图工具的假象。
+
+      绕过办法：外层窗口给一个 ≥492 的布局宽度（我们传的 window-size 仍按目标尺寸，
+      只是布局会更宽），把真实应用塞进一个**精确 390x844 的 iframe**。iframe 内部的
+      innerWidth 就是 390，position: fixed 也相对 iframe 视口，截图恰好从左上角
+      裁出 iframe 那块区域。
+
+      用法：mobile-frame.html?w=390&h=844&theme=night&route=/today
+      其中 theme / route 原样透传给 harness.html。
+    -->
+  </head>
+  <body style="margin: 0; background: #fff">
+    <iframe id="f" style="display: block; border: 0; margin: 0"></iframe>
+    <script>
+      (function () {
+        var q = new URLSearchParams(location.search);
+        var w = q.get("w") || "390";
+        var h = q.get("h") || "844";
+        var theme = q.get("theme");
+        var route = q.get("route") || "/today";
+        var extra = q.get("debug") ? "&debug=" + q.get("debug") : "";
+        var f = document.getElementById("f");
+        f.width = w;
+        f.height = h;
+        f.style.width = w + "px";
+        f.style.height = h + "px";
+        f.src =
+          "harness.html?theme=" +
+          encodeURIComponent(theme || "light") +
+          extra +
+          "#" +
+          route;
+      })();
+    </script>
+  </body>
+</html>

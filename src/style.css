@@ -80,27 +80,69 @@
   /* —— 阴影：仅功能层悬浮用一份；内容层零投影 —— */
   --shadow-float: 0 8px 28px rgba(0, 0, 0, 0.12), 0 1px 4px rgba(0, 0, 0, 0.06);
 
-  /* —— Glass（仅功能层：导航栏/Tab/悬浮钮/浮层；内容层禁用）——
-     Liquid Glass 三要素：雾化半透明底（背后内容透出）+ 顶部流向高光 + 边缘折射环 */
-  --glass-bg: rgba(250, 250, 252, 0.62);
-  --glass-bg-hover: rgba(250, 250, 252, 0.78); /* 悬停态：同材质提亮一档 */
-  --glass-blur: blur(28px) saturate(200%) brightness(1.06);
-  --glass-highlight: inset 0 0.5px 0 rgba(255, 255, 255, 0.95);
-  --glass-sheen: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.38) 0%,
-    rgba(255, 255, 255, 0.08) 55%,
-    rgba(255, 255, 255, 0) 100%
-  );
-  --glass-rim:
-    inset 0 0.5px 0 rgba(255, 255, 255, 0.95),
-    inset 0 -0.5px 0 rgba(0, 0, 0, 0.04),
-    inset 0 0 0 0.5px rgba(255, 255, 255, 0.55);
-  --glass-drop:
-    0 0.5px 1px rgba(0, 0, 0, 0.04),
-    0 2px 10px rgba(0, 0, 0, 0.08),
-    0 8px 24px rgba(0, 0, 0, 0.06);
-  --glass-stroke: rgba(255, 255, 255, 0.5);
+  /* ============================================================
+     材质系统 v5（Liquid Glass）
+     ------------------------------------------------------------
+     一条物理材质，三种"厚度"，加一条交互契约。分档依据是**尺寸**与**背后
+     内容的可预测性**，不是"这里想用玻璃就加一层"：
+
+     · chrome   大面（导航条 / Tab 栏 / running head / 抽屉）—— 背后是整屏
+                滚动内容，模糊半径要大，底要够实才压得住文字
+     · control  小面（按钮 / 悬浮圆钮 / 胶囊）—— 背后多是平整页底色，重度
+                模糊收益为零，改用小半径 + 发丝环，靠投影立起来
+     · overlay  浮层（下拉 / 消息 / 弹窗 / 气泡）—— 必须压住任意内容，
+                取高实度。它是"更实"而不是"更透"，这才读得清
+
+     ⚠ 三条反复踩过的坑，别再踩回去：
+     1. **不要 brightness(>1) + 高 alpha 白底**。app 底色是 #f2f2f7→#fff 的近白，
+        两者叠加只会得到"比背景更白的一块脏斑"——这就是"糊成一片奶白"。
+        亮色下玻璃的存在感必须由**边缘与投影**提供，不能由增白提供。
+     2. **saturate 不超过 ~180%**。界面上全是灰阶文字，饱和度过高在灰底上是
+        纯 no-op，只在书封彩图背后造成刺眼的色偏。
+     3. **一道发丝环就够**。以前同时叠"顶部 0.5px 白线 + 内描边 0.5px + 底部
+        暗线"，在 32px 圆钮上等于把边缘糊成两像素脏圈。
+     ============================================================ */
+
+  /* —— 模糊与几何：与颜色无关，不进主题 —— */
+  --mat-chrome-blur: saturate(180%) blur(24px);
+  --mat-control-blur: saturate(160%) blur(12px);
+  --mat-overlay-blur: saturate(180%) blur(30px);
+
+  /* —— 平面控件填充（内容层按钮用；不走玻璃）——
+     为什么不给按钮用玻璃：按钮多数时候坐在**静止的页面底色**上，背后既没有
+     内容可透、也没有位移可模糊，玻璃在这里只会变成"一块比底色略白的斑"。
+     系统按钮本来就是 systemFill 一族：半透明灰，不模糊。按压时把灰加深即可，
+     反馈因此又准又明显（这正是"按钮点了没反馈"的根治办法）。 */
+  --ctl-fill: rgba(120, 120, 128, 0.12);
+  --ctl-fill-hover: rgba(120, 120, 128, 0.19);
+  --ctl-fill-active: rgba(120, 120, 128, 0.28);
+  --ctl-edge: inset 0 0 0 0.5px rgba(60, 60, 67, 0.08);
+
+  /* —— 厚度：底色（每套主题各一份）——
+     ⚠ 多了第四个值 --mat-control-fill-active（按压态）。它必须与 fill 拉开
+     明显距离，否则"点了没反馈"——这是上版最直接的病：hover 只提白 6%，
+     按下根本没写状态。 */
+  --mat-chrome-fill: rgba(250, 250, 252, 0.88);
+  --mat-control-fill: rgba(255, 255, 255, 0.8);
+  --mat-control-fill-hover: rgba(255, 255, 255, 0.96);
+  /* 按压态用**中性灰**而不是"更白"：近白底上再白不可见，压暗才看得见。
+     实测 .22 的灰在 #f2f2f7 底上落成 #d6d6da，与常态 #fdfdfe 差 39/255 ——
+     一眼可见。低于 .14 就会被看成"没反应"。 */
+  --mat-control-fill-active: rgba(120, 120, 128, 0.22);
+  --mat-overlay-fill: rgba(252, 252, 254, 0.92);
+
+  /* —— 边缘：一道内描边 + 一道顶部镜面高光 + 极轻底部暗边 ——
+     ⚠ 描边必须是**暗**的。旧版三种边全是白色半透明，在 #f2f2f7/#fff 的近白底上
+     等于什么都没画，玻璃片自然"糊开没有边界"——这是最主要的脏源。 */
+  --mat-edge: inset 0 0 0 0.5px rgba(60, 60, 67, 0.18);
+  --mat-specular: inset 0 0.5px 0 rgba(255, 255, 255, 0.95);
+  --mat-shade: inset 0 -0.5px 0 rgba(0, 0, 0, 0.05);
+
+  /* —— 投影：按控件尺寸分三档，按下时收到贴桌 —— */
+  --mat-float-sm: 0 1px 2px rgba(0, 0, 0, 0.05), 0 2px 8px rgba(0, 0, 0, 0.09);
+  --mat-float-md: 0 1px 3px rgba(0, 0, 0, 0.07), 0 8px 24px rgba(0, 0, 0, 0.1);
+  --mat-float-lg: 0 2px 6px rgba(0, 0, 0, 0.08), 0 16px 40px rgba(0, 0, 0, 0.14);
+  --mat-float-press: 0 0.5px 1px rgba(0, 0, 0, 0.08);
 
   /* —— Motion —— */
   --spring: cubic-bezier(0.32, 0.72, 0, 1);
@@ -141,29 +183,30 @@
   --sys-orange: #ffd60a;
   --sys-red: #ff453a;
 
-  --glass-bg: rgba(44, 44, 46, 0.6);
-  --glass-bg-hover: rgba(58, 58, 60, 0.72); /* 暗色下同材质提亮一档 */
-  --glass-highlight: inset 0 0.5px 0 rgba(255, 255, 255, 0.22);
-  --glass-sheen: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.14) 0%,
-    rgba(255, 255, 255, 0.04) 55%,
-    rgba(255, 255, 255, 0) 100%
-  );
-  --glass-rim:
-    inset 0 0.5px 0 rgba(255, 255, 255, 0.22),
-    inset 0 -0.5px 0 rgba(0, 0, 0, 0.2),
-    inset 0 0 0 0.5px rgba(255, 255, 255, 0.14);
-  --glass-drop:
-    0 0.5px 1px rgba(0, 0, 0, 0.2),
-    0 2px 10px rgba(0, 0, 0, 0.24),
-    0 8px 24px rgba(0, 0, 0, 0.18);
-  --glass-stroke: rgba(255, 255, 255, 0.14);
+  /* 暗色下玻璃必须**比背景亮**才立得起来（亮色下靠投影，暗色下靠身位差）；
+     透明度反而要比亮色更低——深色背后的高频内容最容易糊成一片泥 */
+  --mat-chrome-fill: rgba(36, 36, 38, 0.9);
+  --ctl-fill: rgba(120, 120, 128, 0.24);
+  --ctl-fill-hover: rgba(120, 120, 128, 0.34);
+  --ctl-fill-active: rgba(120, 120, 128, 0.46);
+  --ctl-edge: inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
+  --mat-control-fill: rgba(72, 72, 76, 0.72);
+  --mat-control-fill-hover: rgba(92, 92, 96, 0.86);
+  /* 暗色下"压暗"不可见（背景已是黑的），按压改走**提亮**：fill .72 → .46 的灰更实 */
+  --mat-control-fill-active: rgba(120, 120, 128, 0.5);
+  --mat-overlay-fill: rgba(50, 50, 52, 0.95);
+  /* 暗色下描边必须是**亮**的（与亮色完全相反），否则控件边界消失在黑底里 */
+  --mat-edge: inset 0 0 0 0.5px rgba(255, 255, 255, 0.18);
+  --mat-specular: inset 0 0.5px 0 rgba(255, 255, 255, 0.22);
+  --mat-shade: inset 0 -0.5px 0 rgba(0, 0, 0, 0.5);
+  --mat-float-sm: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.34);
+  --mat-float-md: 0 1px 3px rgba(0, 0, 0, 0.42), 0 8px 24px rgba(0, 0, 0, 0.46);
+  --mat-float-lg: 0 2px 6px rgba(0, 0, 0, 0.44), 0 16px 40px rgba(0, 0, 0, 0.55);
+  --mat-float-press: 0 0.5px 1px rgba(0, 0, 0, 0.3);
 
   --shadow-float: 0 8px 28px rgba(0, 0, 0, 0.44), 0 1px 4px rgba(0, 0, 0, 0.3);
 
   color-scheme: dark;
-    color-scheme: dark;
 }
 
 /* —— 暖纸：米黄底 + 深褐字，降蓝光，长读柔和 —— */
@@ -189,24 +232,24 @@
   --sys-orange: #b4700f;
   --sys-red: #a8352b;
 
-  --glass-bg: rgba(250, 244, 230, 0.66);
-  --glass-bg-hover: rgba(252, 247, 236, 0.82);
-  --glass-highlight: inset 0 0.5px 0 rgba(255, 253, 246, 0.95);
-  --glass-sheen: linear-gradient(
-    180deg,
-    rgba(255, 252, 244, 0.4) 0%,
-    rgba(255, 250, 238, 0.1) 55%,
-    rgba(255, 248, 232, 0) 100%
-  );
-  --glass-rim:
-    inset 0 0.5px 0 rgba(255, 253, 246, 0.95),
-    inset 0 -0.5px 0 rgba(120, 90, 55, 0.06),
-    inset 0 0 0 0.5px rgba(255, 252, 244, 0.6);
-  --glass-drop:
-    0 0.5px 1px rgba(120, 90, 55, 0.06),
-    0 2px 10px rgba(120, 90, 55, 0.1),
-    0 8px 24px rgba(120, 90, 55, 0.08);
-  --glass-stroke: rgba(255, 252, 244, 0.6);
+  /* 暖纸的玻璃要"暖而不黄"：底色取纸白而非米黄，只在投影里带一点褐 —— 
+     玻璃片本身发黄会和纸底糊在一起、失去层次 */
+  --mat-chrome-fill: rgba(249, 244, 232, 0.9);
+  --ctl-fill: rgba(140, 110, 70, 0.13);
+  --ctl-fill-hover: rgba(140, 110, 70, 0.2);
+  --ctl-fill-active: rgba(140, 110, 70, 0.29);
+  --ctl-edge: inset 0 0 0 0.5px rgba(120, 90, 55, 0.1);
+  --mat-control-fill: rgba(255, 252, 246, 0.82);
+  --mat-control-fill-hover: rgba(255, 254, 250, 0.96);
+  --mat-control-fill-active: rgba(140, 110, 70, 0.24);
+  --mat-overlay-fill: rgba(251, 246, 236, 0.95);
+  --mat-edge: inset 0 0 0 0.5px rgba(120, 90, 55, 0.2);
+  --mat-specular: inset 0 0.5px 0 rgba(255, 253, 246, 0.95);
+  --mat-shade: inset 0 -0.5px 0 rgba(120, 90, 55, 0.08);
+  --mat-float-sm: 0 1px 2px rgba(120, 90, 55, 0.07), 0 2px 8px rgba(120, 90, 55, 0.12);
+  --mat-float-md: 0 1px 3px rgba(120, 90, 55, 0.09), 0 8px 24px rgba(120, 90, 55, 0.14);
+  --mat-float-lg: 0 2px 6px rgba(120, 90, 55, 0.12), 0 16px 40px rgba(120, 90, 55, 0.16);
+  --mat-float-press: 0 0.5px 1px rgba(120, 90, 55, 0.1);
 
   --shadow-float: 0 8px 28px rgba(120, 90, 55, 0.18), 0 1px 4px rgba(120, 90, 55, 0.1);
 
@@ -236,24 +279,22 @@
   --sys-orange: #ffd60a;
   --sys-red: #ff453a;
 
-  --glass-bg: rgba(72, 72, 74, 0.62);
-  --glass-bg-hover: rgba(88, 88, 90, 0.74);
-  --glass-highlight: inset 0 0.5px 0 rgba(255, 255, 255, 0.26);
-  --glass-sheen: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.16) 0%,
-    rgba(255, 255, 255, 0.05) 55%,
-    rgba(255, 255, 255, 0) 100%
-  );
-  --glass-rim:
-    inset 0 0.5px 0 rgba(255, 255, 255, 0.26),
-    inset 0 -0.5px 0 rgba(0, 0, 0, 0.22),
-    inset 0 0 0 0.5px rgba(255, 255, 255, 0.16);
-  --glass-drop:
-    0 0.5px 1px rgba(0, 0, 0, 0.22),
-    0 2px 10px rgba(0, 0, 0, 0.26),
-    0 8px 24px rgba(0, 0, 0, 0.2);
-  --glass-stroke: rgba(255, 255, 255, 0.16);
+  --mat-chrome-fill: rgba(64, 64, 67, 0.9);
+  --ctl-fill: rgba(120, 120, 128, 0.26);
+  --ctl-fill-hover: rgba(120, 120, 128, 0.36);
+  --ctl-fill-active: rgba(120, 120, 128, 0.48);
+  --ctl-edge: inset 0 0 0 0.5px rgba(255, 255, 255, 0.12);
+  --mat-control-fill: rgba(104, 104, 108, 0.66);
+  --mat-control-fill-hover: rgba(124, 124, 128, 0.82);
+  --mat-control-fill-active: rgba(120, 120, 128, 0.46);
+  --mat-overlay-fill: rgba(74, 74, 77, 0.95);
+  --mat-edge: inset 0 0 0 0.5px rgba(255, 255, 255, 0.2);
+  --mat-specular: inset 0 0.5px 0 rgba(255, 255, 255, 0.26);
+  --mat-shade: inset 0 -0.5px 0 rgba(0, 0, 0, 0.45);
+  --mat-float-sm: 0 1px 2px rgba(0, 0, 0, 0.32), 0 2px 8px rgba(0, 0, 0, 0.26);
+  --mat-float-md: 0 1px 3px rgba(0, 0, 0, 0.34), 0 8px 24px rgba(0, 0, 0, 0.36);
+  --mat-float-lg: 0 2px 6px rgba(0, 0, 0, 0.36), 0 16px 40px rgba(0, 0, 0, 0.46);
+  --mat-float-press: 0 0.5px 1px rgba(0, 0, 0, 0.24);
 
   --shadow-float: 0 8px 28px rgba(0, 0, 0, 0.4), 0 1px 4px rgba(0, 0, 0, 0.28);
 
@@ -285,29 +326,27 @@
     --sys-orange: #ffd60a;
     --sys-red: #ff453a;
 
-    --glass-bg: rgba(44, 44, 46, 0.6);
-    --glass-bg-hover: rgba(58, 58, 60, 0.72); /* 暗色下同材质提亮一档 */
-    --glass-highlight: inset 0 0.5px 0 rgba(255, 255, 255, 0.22);
-    --glass-sheen: linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.14) 0%,
-      rgba(255, 255, 255, 0.04) 55%,
-      rgba(255, 255, 255, 0) 100%
-    );
-    --glass-rim:
-      inset 0 0.5px 0 rgba(255, 255, 255, 0.22),
-      inset 0 -0.5px 0 rgba(0, 0, 0, 0.2),
-      inset 0 0 0 0.5px rgba(255, 255, 255, 0.14);
-    --glass-drop:
-      0 0.5px 1px rgba(0, 0, 0, 0.2),
-      0 2px 10px rgba(0, 0, 0, 0.24),
-      0 8px 24px rgba(0, 0, 0, 0.18);
-    --glass-stroke: rgba(255, 255, 255, 0.14);
+    /* 暗色令牌与 [data-theme="night"] 完全一致（system 只是"什么时候启用"的开关） */
+    --mat-chrome-fill: rgba(36, 36, 38, 0.9);
+    --ctl-fill: rgba(120, 120, 128, 0.24);
+    --ctl-fill-hover: rgba(120, 120, 128, 0.34);
+    --ctl-fill-active: rgba(120, 120, 128, 0.46);
+    --ctl-edge: inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
+    --mat-control-fill: rgba(72, 72, 76, 0.72);
+    --mat-control-fill-hover: rgba(92, 92, 96, 0.86);
+    --mat-control-fill-active: rgba(120, 120, 128, 0.5);
+    --mat-overlay-fill: rgba(50, 50, 52, 0.95);
+    --mat-edge: inset 0 0 0 0.5px rgba(255, 255, 255, 0.18);
+    --mat-specular: inset 0 0.5px 0 rgba(255, 255, 255, 0.22);
+    --mat-shade: inset 0 -0.5px 0 rgba(0, 0, 0, 0.5);
+    --mat-float-sm: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.34);
+    --mat-float-md: 0 1px 3px rgba(0, 0, 0, 0.42), 0 8px 24px rgba(0, 0, 0, 0.46);
+    --mat-float-lg: 0 2px 6px rgba(0, 0, 0, 0.44), 0 16px 40px rgba(0, 0, 0, 0.55);
+    --mat-float-press: 0 0.5px 1px rgba(0, 0, 0, 0.3);
 
     --shadow-float: 0 8px 28px rgba(0, 0, 0, 0.44), 0 1px 4px rgba(0, 0, 0, 0.3);
 
     color-scheme: dark;
-      color-scheme: dark;
   }
 }
 
@@ -392,28 +431,114 @@ body {
   }
 }
 
-/* ---------- 功能层液态玻璃（regular 变体，仅导航/控件/浮层） ---------- */
+/* ---------- 材质系统 v5：一条材质、三种厚度（仅功能层） ----------
+   用法只有三个类，别再造第四种写法。所有玻璃控件都必须带 `mat-press`
+   （见下面的按压契约），否则用户按下去没有任何回应——这正是"按钮点了没反馈"的根因：
+   旧代码把按压反馈散落在各处（有的 scale、有的只换底色、有的什么都没有）。 */
 
-/* 玻璃条/钮/片共用参数：半透明雾底 + 模糊提饱和提亮度 + 折射环 + 悬浮投影 */
-.glass {
-  background: var(--glass-sheen), var(--glass-bg);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
+.glass-chrome,
+.glass-control,
+.glass-overlay {
   border: none;
-  box-shadow: var(--glass-rim), var(--glass-drop);
+  /* 玻璃的顺序：底色最下 → 边缘环 → 投影；高光由 --mat-specular 提供，
+     不再是铺满整块的白色渐变（那层白雾就是"糊成奶白"的第二元凶） */
+  box-shadow:
+    var(--mat-specular),
+    var(--mat-shade),
+    var(--mat-edge);
 }
 
-/* 浮层（下拉/气泡/Dialog/消息条/抽屉）天然浮于内容之上 → 功能层，允许 glass */
+/* 大面：导航条 / Tab 栏 / running head / 抽屉。背后是整屏滚动内容，模糊拉满 */
+.glass-chrome {
+  background-color: var(--mat-chrome-fill);
+  -webkit-backdrop-filter: var(--mat-chrome-blur);
+  backdrop-filter: var(--mat-chrome-blur);
+}
+
+/* 小面：**浮在内容之上**的小控件（翻章箭头 / 侧栏收放钮 / Aa 钮）。
+   ⚠ 只有"浮起来、底下会有东西滑过"的小控件才用这一档；坐在静止底色上的
+   按钮不属于这里，它们走 --ctl-fill 纯灰填充（见"行动按钮语言"）。
+   模糊只要 12px —— 32px 圆钮再大的半径除了烧 GPU 不会多出信息量 */
+.glass-control {
+  background-color: var(--mat-control-fill);
+  -webkit-backdrop-filter: var(--mat-control-blur);
+  backdrop-filter: var(--mat-control-blur);
+  box-shadow:
+    var(--mat-specular),
+    var(--mat-shade),
+    var(--mat-edge),
+    var(--mat-float-sm);
+}
+
+/* 浮层：下拉 / 消息 / 弹窗 / 气泡。要压住任意内容，取高实度 */
+.glass-overlay {
+  background-color: var(--mat-overlay-fill);
+  -webkit-backdrop-filter: var(--mat-overlay-blur);
+  backdrop-filter: var(--mat-overlay-blur);
+  box-shadow:
+    var(--mat-specular),
+    var(--mat-shade),
+    var(--mat-edge),
+    var(--mat-float-lg);
+}
+
+/* ---------- 按压契约（所有玻璃控件共用；别再各写一份） ----------
+   一次按压要让用户看见三件事同时发生：
+   1. **底面变暗**（--mat-control-fill-active）——最主要的一击，颜色变化在视网膜外周末梢也看得见；
+   2. **投影收掉**（--mat-float-press）——"被按下去、贴到桌面上"的物理暗示；
+   3. **轻微缩小**（0.96）——触觉确认。
+   时长不对称：按下 80ms（必须即时，慢一点就"没手感"），回弹 220ms 弹簧。
+   只动 background-color / box-shadow / transform 三个可合成属性，
+   不动 backdrop-filter（改写滤镜会整块重绘，按下瞬间会闪）。 */
+.mat-press {
+  transition:
+    background-color 80ms linear,
+    box-shadow 80ms linear,
+    transform 80ms var(--spring),
+    color 80ms linear;
+}
+
+/* ⚠ 必须是 `:hover:not(:active)`。若只写 :hover，按下时两条规则同时命中，
+   谁在后面谁赢——组件 scoped 样式总在全局之后，于是 hover 的"变亮"会盖掉
+   active 的"压暗"，按下去毫无变化。这个 `:not(:active)` 是整个按压契约的保险丝。 */
+.mat-press:hover:not(:active) {
+  background-color: var(--mat-control-fill-hover);
+}
+
+.mat-press:active {
+  background-color: var(--mat-control-fill-active);
+  box-shadow:
+    var(--mat-specular),
+    var(--mat-float-press);
+  transform: scale(0.96);
+  /* 松开是 220ms 弹簧：按下快、回弹缓，符合"物体被压下去再弹回"的直觉 */
+  transition:
+    background-color 220ms var(--spring),
+    box-shadow 220ms var(--spring),
+    transform 220ms var(--spring);
+}
+
+/* 减弱动效：只留颜色变化（位移/缩放一律去掉） */
+@media (prefers-reduced-motion: reduce) {
+  .mat-press:active {
+    transform: none;
+  }
+}
+
+/* 浮层（下拉/气泡/Dialog/消息条/抽屉）天然浮于内容之上 → 功能层 */
 .n-message,
 .n-dropdown-menu,
 .n-popconfirm,
 .n-dialog .n-card,
 .n-drawer .n-drawer-content {
-  background: var(--glass-sheen), var(--glass-bg) !important;
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
+  background-color: var(--mat-overlay-fill) !important;
+  -webkit-backdrop-filter: var(--mat-overlay-blur);
+  backdrop-filter: var(--mat-overlay-blur);
   border: none !important;
-  box-shadow: var(--glass-rim), var(--glass-drop);
+  box-shadow:
+    var(--mat-specular),
+    var(--mat-edge),
+    var(--mat-float-lg);
 }
 
 /* 底部抽屉 = iOS sheet：顶角大圆角（同心，38 → 内容 38−边距） */
@@ -528,46 +653,55 @@ h6 {
 }
 
 /* ---------- 行动按钮语言（两端通用） ----------
-   统一规则：全站只保留一套材质（液态玻璃三件套），层级靠"实心 / 淡色"表达，不换材质。
-   之前 primary=实心墨黑、default=白玻璃片、btn-tinted=灰胶囊，三套并排就会出现
-   "一下黑一下白"的割裂感。现收敛为：
-   · primary   = 实心 accent（唯一强调色，一屏一处即可）
-   · default   = 同一层玻璃、底色更淡，字色取正文色
-   · 两者的圆角 / 高度 / 内边距 / 过渡完全一致，只差底色与字色
-   所有颜色一律走令牌，主题切换时自动跟随（按钮上不要写死色值） */
+   全站只有一条材质，层级靠"底色"表达，不换材质、不换圆角、不换高度：
+   · primary = 实心 accent（唯一强调色，一屏一处）
+   · tinted  = accent 淡底（次级动作，字色 accent）
+   · default = 玻璃片（最轻，字色正文）
+   三者几何完全一致（胶囊 / 36px 高 / 0 16px），并排不会"一下黑一下白"。
 
-/* 按钮 = Liquid Glass 控件（功能层）：雾化玻璃底 + 流向高光 + 折射环 + 悬浮投影；naive 后注入用 !important 压住 */
+   按压反馈走统一契约（与 .mat-press 同参）：底色压暗 → 投影收到贴桌 → 96% 缩，
+   按下 80ms、回弹 220ms。**默认按钮以前没有 :active 状态**，点下去只剩下
+   naive 的 focus 圈，用户体感就是"点了没反应"——这是本次重点修的瑕疵之一。 */
+
+/* 几何与过渡：所有非文本类按钮共用（含 disabled 之外的全部） */
 .n-button:not(.n-button--disabled):not(.n-button--text-type):not(.n-button--quaternary-type) {
   border: none !important;
   border-radius: var(--radius-pill) !important;
-  box-shadow:
-    var(--glass-rim),
-    var(--glass-drop);
   transition:
-    transform var(--dur-fast) var(--spring),
-    box-shadow var(--dur-fast) var(--spring),
-    background-color var(--dur-fast) ease;
+    background-color 80ms linear,
+    box-shadow 80ms linear,
+    color 80ms linear,
+    transform 80ms var(--spring);
 }
 
-/* 默认按钮 = 与主按钮同层玻璃，仅底色更淡、字色取正文色 */
+/* 次级按钮（default）= 系统 framed fill：半透明灰底、不模糊、不投影。
+   ⚠ 这里**刻意不用玻璃**：按钮坐在静止的页面底色上，没有内容可透、没有位移可糊，
+   玻璃只会变成"比底色略白的一块斑"，还平白多一个合成层。系统按钮本来就是
+   systemFill 一族——纯灰。按压把灰加深一档，反馈准确又明显。 */
 .n-button--default-type:not(.n-button--disabled):not(.btn-tinted):not(.n-button--primary-type) {
-  background: var(--glass-sheen), var(--glass-bg) !important;
-  -webkit-backdrop-filter: blur(18px) saturate(190%) brightness(1.04);
-  backdrop-filter: blur(18px) saturate(190%) brightness(1.04);
+  background-color: var(--ctl-fill) !important;
   color: var(--label) !important;
+  box-shadow: var(--ctl-edge) !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
-.n-button--default-type:not(.n-button--disabled):not(.btn-tinted):not(.n-button--primary-type):hover {
-  background: var(--glass-sheen), var(--glass-bg-hover) !important;
-  box-shadow:
-    var(--glass-rim),
-    0 1px 2px rgba(0, 0, 0, 0.05),
-    0 4px 16px rgba(0, 0, 0, 0.1);
+.n-button--default-type:not(.n-button--disabled):not(.btn-tinted):not(.n-button--primary-type):hover:not(:active) {
+  background-color: var(--ctl-fill-hover) !important;
+}
+
+.n-button--default-type:not(.n-button--disabled):not(.btn-tinted):not(.n-button--primary-type):active {
+  background-color: var(--ctl-fill-active) !important;
+  box-shadow: none !important;
+  transform: scale(0.96);
+  transition:
+    background-color 220ms var(--spring),
+    transform 220ms var(--spring);
 }
 
 /* 主按钮（实心 accent）：厚质高光 + 落地投影。
    底色/字色交给 naive 主题（common.primaryColor），随明暗主题自动切换；
-   投影不再写死 rgba(29,29,31)（那是亮色墨黑），改用 currentColor 派生，
+   投影不写死 rgba(29,29,31)（那是亮色墨黑），改用 currentColor 派生，
    亮色下是墨黑投影、暗色下自动翻成白投影 */
 .n-button--primary-type:not(.n-button--disabled) {
   border: none !important;
@@ -576,10 +710,6 @@ h6 {
     inset 0 -1px 0 rgba(0, 0, 0, 0.22),
     0 1px 2px rgba(0, 0, 0, 0.18),
     0 4px 16px color-mix(in srgb, currentColor 20%, transparent);
-  transition:
-    transform var(--dur-fast) var(--spring),
-    box-shadow var(--dur-fast) var(--spring),
-    background-color var(--dur-fast) ease;
 }
 
 .n-button--primary-type:not(.n-button--disabled):active {
@@ -587,43 +717,85 @@ h6 {
     inset 0 1px 0 rgba(255, 255, 255, 0.12),
     0 1px 2px rgba(0, 0, 0, 0.12),
     0 2px 8px color-mix(in srgb, currentColor 14%, transparent);
+  transform: scale(0.96);
+  transition:
+    box-shadow 220ms var(--spring),
+    transform 220ms var(--spring);
 }
 
-/* tinted 胶囊行动按钮：灰 tint 玻璃 + 文字（系统 tinted 按钮），交互才允许出现 */
+/* tinted 胶囊行动按钮：accent 淡底（= 系统 tinted 按钮）。
+   这一档**不做玻璃**——它就是一层色块，再糊一层模糊既看不出来、又白白多一个
+   合成层；底色直接取 --accent-fill，随主题走 */
 .btn-tinted.n-button:not(.n-button--disabled) {
-  background: var(--glass-sheen), var(--accent-fill) !important;
+  background-color: var(--accent-fill) !important;
   color: var(--accent) !important;
   border: none !important;
   border-radius: var(--radius-pill) !important;
   font-weight: 600;
   height: 34px;
   padding: 0 var(--space-4);
-  -webkit-backdrop-filter: blur(18px) saturate(190%) brightness(1.04);
-  backdrop-filter: blur(18px) saturate(190%) brightness(1.04);
-  box-shadow:
-    inset 0 0.5px 0 rgba(255, 255, 255, 0.85),
-    inset 0 0 0 0.5px rgba(120, 120, 128, 0.24),
-    0 1px 2px rgba(0, 0, 0, 0.06),
-    0 4px 12px rgba(0, 0, 0, 0.05) !important;
+  box-shadow: none !important;
 }
 
-.btn-tinted.n-button:not(.n-button--disabled):hover {
-  background: rgba(120, 120, 128, 0.24) !important;
+.btn-tinted.n-button:not(.n-button--disabled):hover:not(:active) {
+  background-color: var(--fill-1) !important;
 }
 
-/* 圆形图标按钮：页面头部轻量操作（功能层 → 允许 glass） */
+.btn-tinted.n-button:not(.n-button--disabled):active {
+  background-color: var(--fill-2) !important;
+  transform: scale(0.96);
+  transition:
+    background-color 220ms var(--spring),
+    transform 220ms var(--spring);
+}
+
+/* 圆形图标按钮：页面头部轻量操作（刷新等）。坐在页面底色上 → 同样走纯灰填充，
+   不用玻璃。几何是正圆，按压缩得比胶囊更狠（小目标需要更强的形变才看得见）。 */
 .btn-icon-circle.n-button:not(.n-button--disabled) {
   width: 32px;
   height: 32px;
   padding: 0 !important;
   border-radius: 50% !important;
   border: none !important;
-  background: var(--glass-sheen), var(--glass-bg) !important;
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  backdrop-filter: blur(20px) saturate(180%);
-  color: var(--label-2);
-  box-shadow: var(--glass-rim),
-    0 1px 4px rgba(0, 0, 0, 0.05);
+  background-color: var(--ctl-fill) !important;
+  color: var(--label-2) !important;
+  box-shadow: var(--ctl-edge) !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.btn-icon-circle.n-button:not(.n-button--disabled):hover:not(:active) {
+  background-color: var(--ctl-fill-hover) !important;
+  color: var(--accent) !important;
+}
+
+.btn-icon-circle.n-button:not(.n-button--disabled):active {
+  background-color: var(--ctl-fill-active) !important;
+  box-shadow: none !important;
+  transform: scale(0.9);
+  transition:
+    background-color 220ms var(--spring),
+    transform 220ms var(--spring);
+}
+
+/* 文字按钮 / quaternary（A−A＋、关闭、换一批…）：不铺材质、不投影，
+   但**必须有按压反馈**——它们恰恰最容易被当成"点了没反应"。
+   naive 自带 hover 底色，只补 :active 的一档加深 + 轻微缩放。 */
+.n-button--text-type:not(.n-button--disabled):active,
+.n-button--quaternary-type:not(.n-button--disabled):active {
+  background-color: var(--fill-2) !important;
+  transform: scale(0.96);
+  transition:
+    background-color 220ms var(--spring),
+    transform 220ms var(--spring);
+}
+
+.n-button--text-type:not(.n-button--disabled),
+.n-button--quaternary-type:not(.n-button--disabled) {
+  transition:
+    background-color 80ms linear,
+    color 80ms linear,
+    transform 80ms var(--spring);
 }
 
 /* ---------- 通用容器质感（内容层：标准材质，零投影零玻璃） ---------- */
@@ -653,6 +825,30 @@ h6 {
 .n-layout {
   --n-color: var(--bg-grouped);
   background-color: var(--bg-grouped) !important;
+}
+
+/* Alert（提示条）同理，但多一层麻烦：它的底色是按 **type**（info/error/warning/
+   success）算出来的，而 naive 既不给类型加 class、也不读主题令牌 —— 它把
+   `--n-color` 作为内联 style 写死，且只有亮/暗两档。结果在 sepia 下是一条**冷灰**
+   横带压在暖纸上（实测 (237,237,237) 对页面 (239,230,208)），在 slate/night 下是
+   一条**蓝**带压在灰/黑底上，边界还是硬切的。
+   解法：naive 同时按类型写了内联 `--n-icon-color`（这正是该类型该有的强调色，
+   亮暗两档已经跟 themeOverrides 对齐），把它当作"提示色"，用 color-mix 与**当前
+   主题的卡片色**合成 —— 底色和描边于是自动跟着五档主题走，语义色也保留。 */
+.n-alert {
+  --n-color: color-mix(in srgb, var(--n-icon-color) 8%, var(--bg-grouped-2)) !important;
+  --n-border: 0.5px solid color-mix(in srgb, var(--n-icon-color) 28%, var(--separator)) !important;
+  --n-title-text-color: var(--label) !important;
+  --n-content-text-color: var(--label-2) !important;
+  --n-border-radius: var(--radius-group) !important;
+}
+
+/* 关闭钮同样吃内联色，一并收回令牌 */
+.n-alert {
+  --n-close-icon-color: var(--label-3) !important;
+  --n-close-icon-color-hover: var(--label-2) !important;
+  --n-close-color-hover: var(--fill-3) !important;
+  --n-close-color-pressed: var(--fill-2) !important;
 }
 
 /* 输入框同理：naive 的 Input 也把底色写在 --n-color 上，且只有亮/暗两档。
@@ -724,25 +920,10 @@ h6 {
 
 /* ---------- 动效（HIG Motion：简短、可中断、尊重减弱动效） ---------- */
 
-@media (prefers-reduced-motion: no-preference) {
-  .n-button,
-  .tab-item,
-  .rail-item {
-    transition:
-      transform var(--dur-fast) var(--spring),
-      background-color var(--dur-fast) ease;
-  }
-
-  /* iOS 按压反馈：微缩 0.97（简短、无过冲） */
-  .n-button:active {
-    transform: scale(0.97);
-  }
-
-  .tab-item:active,
-  .rail-item:active {
-    transform: scale(0.96);
-  }
-}
+/* ⚠ 这里曾经还有一份 `.n-button:active { transform: scale(0.97) }` 与
+   `.tab-item/.rail-item:active` 的按压缩放，与上面的按压契约**重复且参数不一致**
+   （0.97 vs 0.96、无底色变化）。按"单一来源"原则已删除：
+   按压反馈只在 .mat-press 与三档按钮规则里定义一次。不要再加回来。 */
 
 @media (prefers-reduced-motion: reduce) {
   *,

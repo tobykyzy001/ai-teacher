@@ -13,3 +13,6 @@ src-tauri/tauri.ios.conf.json
 PD分离实战与原理.md
 PD分离专题/
 fixtures/pd-book/
+# 视觉验证截图产物（harness 本身入库，截图是本地跑出来的）
+scripts/glass-harness/before/
+scripts/glass-harness/after/

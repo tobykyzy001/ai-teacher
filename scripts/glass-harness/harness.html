@@ -1,0 +1,677 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI 伴读 · glass harness</title>
+    <!--
+      Glass harness（仅供视觉验证，不属于产品代码）
+
+      必须在 /src/main.ts 之前装好假 Tauri IPC：@tauri-apps/api/core 的 invoke/Channel
+      直接读 window.__TAURI_INTERNALS__（见 node_modules/@tauri-apps/api/core.js）。
+      这段是**经典内联脚本**，在解析期同步执行；Vite 注入的 /@vite/client 与下面的
+      module 脚本都是 defer 的，所以一定晚于这里 —— 顺序天然成立，不需要 hack 等待。
+
+      URL 约定（都在 hash 之前）：
+        harness.html?theme=night&route=/reading/1
+        ?theme=   light|sepia|slate|night，写进 localStorage['ai-teacher:theme']
+        ?extra=1  额外给 <html> 打 data-harness="1"，方便截图时定位（可不用）
+        ?scroll=N 桌面路由 page 挂载后把 .main-col / .main 滚到 N px（看长正文用）
+      路由本身仍用真实的 hash 路由：#/today、#/library …
+    -->
+    <script>
+      (function () {
+        // ---------- 主题：必须在 pinia store 初始化前写 localStorage ----------
+        // theme-mode.ts 的 loadTheme() 直接读 localStorage.getItem('ai-teacher:theme')
+        // 并原样与 ThemeKey 比较 —— 存的是**裸字符串** night，不是 JSON '"night"'。
+        var q = new URLSearchParams(location.search);
+        var theme = q.get("theme");
+        if (theme) {
+          try {
+            localStorage.setItem("ai-teacher:theme", theme);
+          } catch (e) {
+            /* ignore */
+          }
+        }
+        if (q.get("extra")) document.documentElement.setAttribute("data-harness", "1");
+
+        // ?debug=1 → 左上角固定浮层打印视口实测值。headless 的 --window-size 在某些
+        // 宽度下会被 macOS 最小窗口宽度顶到，量一下才能确定"内容被切"是应用的问题
+        // 还是截图窗口的问题。
+        if (q.get("debug")) {
+          document.addEventListener("DOMContentLoaded", function () {
+            var d = document.createElement("div");
+            d.style.cssText =
+              "position:fixed;left:0;top:0;z-index:99999;font:12px/1.4 monospace;" +
+              "background:#000;color:#0f0;padding:4px 6px;white-space:pre;pointer-events:none";
+            document.body.appendChild(d);
+            setInterval(function () {
+              d.textContent =
+                "innerWidth=" + window.innerWidth +
+                " innerHeight=" + window.innerHeight +
+                "\nclientWidth=" + document.documentElement.clientWidth +
+                "\nscrollWidth=" + document.documentElement.scrollWidth +
+                "\ndpr=" + window.devicePixelRatio;
+            }, 200);
+          });
+        }
+
+        // ---------- 假 Tauri internals ----------
+        var callbacks = new Map();
+        var nextCbId = 1;
+
+        // Channel 走 transformCallback(cb) → id；真实后端把 id 发回去由 runCallback 派发。
+        // 我们从不主动推流（mock 数据里 saved_session 直接给结果），保留表只为让
+        // Channel 构造/cleanupCallback 不炸。
+        function transformCallback(cb, once) {
+          var id = nextCbId++;
+          callbacks.set(id, { cb: cb, once: !!once });
+          return id;
+        }
+        function unregisterCallback(id) {
+          callbacks.delete(id);
+        }
+        function runCallback(id, data) {
+          var rec = callbacks.get(id);
+          if (!rec) return;
+          if (rec.once) callbacks.delete(id);
+          try {
+            rec.cb(data);
+          } catch (e) {
+            console.error("[harness] callback error", e);
+          }
+        }
+
+        // 本地图片走 asset 协议，网页里没有该协议；回一段 SVG data URI 占位，
+        // 这样 LibraryView 的 <img> 分支（封面图）也能被看见，而不是全部退化成渐变。
+        var COVER_SVG =
+          "data:image/svg+xml;utf8," +
+          encodeURIComponent(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="340">' +
+              '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">' +
+              '<stop offset="0" stop-color="#8ea7c4"/><stop offset="1" stop-color="#4a5f7a"/>' +
+              "</linearGradient></defs>" +
+              '<rect width="240" height="340" fill="url(#g)"/>' +
+              '<text x="24" y="300" fill="#fff" font-size="20" font-family="-apple-system">EPUB cover</text>' +
+              "</svg>",
+          );
+        function convertFileSrc(path, protocol) {
+          if (/\.(png|jpe?g|webp|gif|svg)$/i.test(String(path))) return COVER_SVG;
+          return "asset://localhost/" + encodeURIComponent(String(path));
+        }
+
+        // ---------- mock 数据 ----------
+        // 形状严格对齐 src/api.ts 的接口（TS 类型即契约）：
+        // BookSummary / Unit / TodayPlan / ReviewItem / ChapterContent …
+        function unit(id, bookId, idx, title, status, mastery) {
+          return { id: id, book_id: bookId, idx: idx, title: title, status: status, mastery: mastery };
+        }
+
+        var BOOKS = [
+          {
+            id: 1,
+            title: "PD 分离实战与原理",
+            format: "epub",
+            added_at: "2026-10-12",
+            total_units: 18,
+            done_units: 7,
+            cover_path: "/Users/zj/Coding/ai-teacher/books/1/cover.png",
+          },
+          {
+            id: 2,
+            title: "大模型推理服务课程",
+            format: "md",
+            added_at: "2026-10-20",
+            total_units: 24,
+            done_units: 11,
+            cover_path: null,
+          },
+          {
+            id: 3,
+            title: "推理框架工程师-学习路线",
+            format: "txt",
+            added_at: "2026-10-26",
+            total_units: 9,
+            done_units: 0,
+            cover_path: null,
+          },
+          {
+            id: 4,
+            title: "Attention Is All You Need · 精读",
+            format: "pdf",
+            added_at: "2026-11-01",
+            total_units: 12,
+            done_units: 12,
+            cover_path: null,
+          },
+          {
+            id: 5,
+            title: "vLLM 源码拆解笔记",
+            format: "md",
+            added_at: "2026-11-02",
+            total_units: 31,
+            done_units: 26,
+            cover_path: null,
+          },
+        ];
+
+        var CHAPTERS_UNITS = [
+          unit(101, 1, 6, "KV Cache 的显存账本", "reading", null),
+          unit(102, 1, 7, "Prefill 与 Decode 的资源错配", "unread", null),
+          unit(103, 1, 8, "分离式调度的取舍", "unread", null),
+        ];
+
+        var TODAY = {
+          due_reviews: [
+            {
+              id: 11,
+              unit_id: 101,
+              unit_title: "KV Cache 的显存账本",
+              book_title: "PD 分离实战与原理",
+              knowledge_point: "PagedAttention 如何消除显存碎片",
+              question_id: 7,
+              due_date: "2026-11-03",
+            },
+            {
+              id: 12,
+              unit_id: 102,
+              unit_title: "Prefill 与 Decode 的资源错配",
+              book_title: "PD 分离实战与原理",
+              knowledge_point: "Prefill 是算力密集、Decode 是访存密集",
+              question_id: null,
+              due_date: "2026-11-03",
+            },
+            {
+              id: 13,
+              unit_id: 205,
+              unit_title: "连续批处理的吞吐收益",
+              book_title: "大模型推理服务课程",
+              knowledge_point: "continuous batching 的调度粒度",
+              question_id: 9,
+              due_date: "2026-11-04",
+            },
+          ],
+          next_units: [
+            {
+              book_id: 1,
+              book_title: "PD 分离实战与原理",
+              unit: unit(102, 1, 7, "Prefill 与 Decode 的资源错配", "unread", null),
+            },
+            {
+              book_id: 2,
+              book_title: "大模型推理服务课程",
+              unit: unit(206, 2, 12, "投机解码的接受率模型", "reading", null),
+            },
+            {
+              book_id: 5,
+              book_title: "vLLM 源码拆解笔记",
+              unit: unit(512, 5, 27, "Scheduler 的抢占与重算", "unread", null),
+            },
+          ],
+          reviewed_today: 2,
+          due_total: 5,
+          streak_days: 12,
+        };
+
+        var CHAPTER = {
+          book_title: "PD 分离实战与原理",
+          chapter_title: "Prefill / Decode 分离：为什么要把一个请求拆成两段",
+          chapter_number: 3,
+          chapter_count: 8,
+          prev_chapter_unit_id: 99,
+          next_chapter_unit_id: 103,
+          segments: [
+            {
+              unit: CHAPTERS_UNITS[0],
+              content: [
+                "## KV Cache 的显存账本",
+                "",
+                "推理服务的显存分三块：**权重**、**KV Cache**、**激活值**。权重是常数，激活值随 batch 线性增长，而 KV Cache 的增长方式是 `2 × layers × heads × head_dim × seq_len × batch × dtype`——它同时吃序列长度和并发数。",
+                "",
+                "这带来一个反直觉的结论：**长上下文服务的瓶颈通常不是算力，而是显存容量**。当 KV Cache 占满时，调度器只能降低并发，GPU 的算力利用率随之掉到 20% 以下。",
+                "",
+                "> PagedAttention 的思路借自操作系统的虚拟内存分页：把 KV Cache 切成固定大小的 block，用 block table 做逻辑到物理的映射，从而消除连续内存分配带来的内部碎片。",
+                "",
+                "关键量化收益：vLLM 论文报告碎片率从 60%–80% 降到 4% 以下，吞吐提升 2–4 倍。",
+              ].join("\n"),
+            },
+            {
+              unit: CHAPTERS_UNITS[1],
+              content: [
+                "## Prefill 与 Decode 的资源错配",
+                "",
+                "同一张卡上跑两阶段，会出现结构性浪费：",
+                "",
+                "1. **Prefill 是算力密集**：整段 prompt 一次前向，矩阵乘的算术强度高，GPU 打满。",
+                "2. **Decode 是访存密集**：每次只生成一个 token，却要把全部权重和 KV Cache 读一遍，带宽打满、SM 闲着。",
+                "3. 混在一起时，Prefill 的长任务会**阻塞** Decode 的 token 间隔，首 token 外的 TPOT 抖动明显。",
+                "",
+                "| 阶段 | 瓶颈 | 典型 MFU | 优化手段 |",
+                "| --- | --- | --- | --- |",
+                "| Prefill | 算力 | 40%–60% | chunked prefill、FlashAttention |",
+                "| Decode | 显存带宽 | 10%–25% | continuous batching、投机解码 |",
+                "",
+                "分离部署的本质是**为两种不同的资源画像各自选机器**，而不是让一台机器同时追两个目标。",
+              ].join("\n"),
+            },
+            {
+              unit: CHAPTERS_UNITS[2],
+              content: [
+                "## 分离式调度的取舍",
+                "",
+                "分离之后，KV Cache 必须在节点间传输，于是出现了新的成本项：",
+                "",
+                "```python",
+                "# 伪代码：P 节点产出 KV，D 节点消费",
+                "kv = prefill(chunk)          # 算力密集",
+                "await transfer(kv, d_node)   # 走 RDMA / NVLink",
+                "for _ in range(n_tokens):",
+                "    token = decode(kv)       # 访存密集",
+                "```",
+                "",
+                "传输时间是硬成本：一个 70B 模型、8k 上下文的 KV Cache 约 1.2 GB，千兆网络下要 10 秒——比 prefill 本身还慢。所以分离方案几乎强制要求 **100Gbps 以上的互联**，否则加速比会被网络吃回去。",
+                "",
+                "结论：分离不是银弹，它是**用网络换算力利用率**的交易。判断该不该做，看互联带宽与并发密度这两个数。",
+              ].join("\n"),
+            },
+          ],
+          saved_session: {
+            explanation: [
+              "## 本章脉络",
+              "",
+              "这一章在回答一个问题：**为什么把一个请求硬拆成 Prefill 和 Decode 两段，跑在两批机器上反而更快？**",
+              "",
+              "作者的三步论证：",
+              "",
+              "1. **先算账**：KV Cache 的显存占用随 `seq_len × batch` 线性增长，长上下文场景下它是容量瓶颈，而不是算力瓶颈。这是后面所有优化的前提。",
+              "2. **再看画像**：Prefill 吃算力（MFU 40%–60%），Decode 吃显存带宽（MFU 10%–25%）。两者混跑时，Prefill 的长任务会拉高 Decode 的 TPOT 抖动。",
+              "3. **最后做交易**：分离能各自选机器、各自打满，代价是 KV Cache 要过网络。1.2 GB / 8k 上下文的传输在千兆网下约 10 秒，**所以分离方案隐含 100Gbps+ 互联这一前提**。",
+              "",
+              "### 容易读错的地方",
+              "",
+              "- 「分离更快」不是无条件成立，它是一个**用网络带宽换算力利用率**的交易，带宽不够就亏。",
+              "- PagedAttention 解决的是**显存碎片**（60%–80% → 4%），不是延迟；别把它当成加速手段串进来。",
+              "",
+              "### 可以这样自测",
+              "",
+              "给定 A100 80G、70B 模型、8k 上下文：先估 KV Cache 单请求占用，再算还能塞几个并发——如果算出来小于 4，本章的论点就直接适用。",
+            ].join("\n"),
+            knowledge_points: [
+              "KV Cache 显存公式",
+              "PagedAttention 碎片率",
+              "Prefill/Decode 画像差异",
+              "分离的互联前提",
+            ],
+          },
+          images_dir: null,
+        };
+
+        var SETTINGS = {
+          base_url: "https://api.deepseek.com/v1",
+          api_key: "sk-harness-placeholder",
+          model: "deepseek-chat",
+          auto_start_reading: false,
+          disable_thinking: true,
+        };
+        var SYNC_SETTINGS = {
+          enabled: false,
+          base_url: "https://dav.jianguoyun.com/dav/",
+          username: "reader@example.com",
+          password: "",
+          folder: "ai-teacher",
+        };
+        var LOCAL_STATS = {
+          stats: { books: 5, units: 94, attempts: 217, review_items: 63, done_units: 56 },
+          schema_version: 4,
+          app_version: "0.2.0-rc.2",
+        };
+
+        // 错题本
+        var WRONG = [
+          {
+            question_id: 7,
+            unit_id: 101,
+            unit_title: "KV Cache 的显存账本",
+            book_id: 1,
+            book_title: "PD 分离实战与原理",
+            stem: "在 80GB 显存的卡上部署 70B 模型（FP16）、8k 上下文，单请求 KV Cache 约 1.2GB。若把 `gpu_memory_utilization` 设为 0.9，最多能同时跑几个请求？",
+            knowledge_point: "KV Cache 显存公式",
+            wrong_count: 2,
+            last_wrong_at: "2026-11-02T21:14:00+08:00",
+            resolved: false,
+          },
+          {
+            question_id: 9,
+            unit_id: 205,
+            unit_title: "连续批处理的吞吐收益",
+            book_id: 2,
+            book_title: "大模型推理服务课程",
+            stem: "continuous batching 相对 static batching 的主要收益来自哪里？",
+            knowledge_point: "continuous batching 的调度粒度",
+            wrong_count: 1,
+            last_wrong_at: "2026-11-01T09:02:00+08:00",
+            resolved: false,
+          },
+          {
+            question_id: 3,
+            unit_id: 103,
+            unit_title: "分离式调度的取舍",
+            book_id: 1,
+            book_title: "PD 分离实战与原理",
+            stem: "PD 分离方案隐含的互联带宽前提大约是多少？",
+            knowledge_point: "分离的互联前提",
+            wrong_count: 3,
+            last_wrong_at: "2026-10-29T18:40:00+08:00",
+            resolved: true,
+          },
+        ];
+
+        // 题目：QuizQuestion 刻意不含 answer 字段（契约要求，判分只能在后端）
+        var QUESTIONS = {
+          7: {
+            id: 7,
+            unit_id: 101,
+            qtype: "mcq",
+            stem: "PagedAttention 主要解决 KV Cache 的什么问题？",
+            options: [
+              "显存碎片导致的容量浪费",
+              "注意力计算的浮点误差",
+              "权重加载的 IO 瓶颈",
+              "跨节点通信的序列化开销",
+            ],
+            knowledge_point: "KV Cache 显存公式",
+          },
+          9: {
+            id: 9,
+            unit_id: 205,
+            qtype: "short",
+            stem: "简述 continuous batching 相比 static batching 的调度差异。",
+            options: [],
+            knowledge_point: "continuous batching 的调度粒度",
+          },
+        };
+
+        function delay(v, ms) {
+          return new Promise(function (res) {
+            setTimeout(function () {
+              res(v);
+            }, ms || 0);
+          });
+        }
+
+        // 命令名与 src/api.ts 的 call<T>("...") 一一对应；参数形状不校验（真实后端由
+        // serde 做），只保证返回体的字段与 TS 类型一致。
+        var HANDLERS = {
+          get_settings: function () {
+            return SETTINGS;
+          },
+          save_settings: function () {
+            return null;
+          },
+          test_llm_connection: function () {
+            return { ok: true, message: "连接成功（harness mock）" };
+          },
+          take_thinking_notice: function () {
+            return null;
+          },
+          list_books: function () {
+            return BOOKS;
+          },
+          import_book: function () {
+            return BOOKS[0];
+          },
+          remove_book: function () {
+            return null;
+          },
+          get_book_detail: function (args) {
+            return {
+              book: BOOKS[0],
+              units: CHAPTERS_UNITS,
+              chapters: [
+                {
+                  title: "Prefill / Decode 分离",
+                  first_unit_id: 101,
+                  units: CHAPTERS_UNITS,
+                },
+              ],
+            };
+          },
+          get_today: function () {
+            return TODAY;
+          },
+          get_chapter_content: function () {
+            return CHAPTER;
+          },
+          get_unit_content: function (args) {
+            return {
+              unit: CHAPTERS_UNITS[0],
+              book_title: CHAPTER.book_title,
+              content: CHAPTER.segments[0].content,
+            };
+          },
+          start_chapter_reading: function () {
+            return CHAPTER.saved_session;
+          },
+          start_reading: function () {
+            return CHAPTER.saved_session;
+          },
+          ask_chapter: function () {
+            return "（harness mock）这是答疑回答。";
+          },
+          ask: function () {
+            return "（harness mock）这是答疑回答。";
+          },
+          ask_chapter_selection: function () {
+            return "（harness mock）这是针对选中段落的回答。";
+          },
+          ask_selection: function () {
+            return "（harness mock）这是针对选中段落的回答。";
+          },
+          set_unit_skipped: function () {
+            return null;
+          },
+          set_chapter_skipped: function () {
+            return null;
+          },
+          // 错题本
+          list_wrong_questions: function (args) {
+            // 后端按 bookId 过滤（unitId 由前端本地过滤）
+            var bid = args && args.bookId != null ? args.bookId : null;
+            return bid == null
+              ? WRONG
+              : WRONG.filter(function (w) {
+                  return w.book_id === bid;
+                });
+          },
+          get_question: function (args) {
+            return QUESTIONS[args && args.questionId] || QUESTIONS[7];
+          },
+          // 出题：按后端规则给 5 题（约每 500 字 1 题、3–8 题封顶，单选:简答≈3:2）
+          generate_quiz: function () {
+            return [
+              QUESTIONS[7],
+              QUESTIONS[9],
+              {
+                id: 21,
+                unit_id: 101,
+                qtype: "mcq",
+                stem: "vLLM 论文报告的 PagedAttention 碎片率大约降到多少？",
+                options: ["4% 以下", "20% 左右", "40% 左右", "60% 以上"],
+                knowledge_point: "PagedAttention 碎片率",
+              },
+              {
+                id: 22,
+                unit_id: 101,
+                qtype: "mcq",
+                stem: "KV Cache 占用与下列哪一项**不是**线性关系？",
+                options: ["batch size", "序列长度", "层数", "GPU 核心数"],
+                knowledge_point: "KV Cache 显存公式",
+              },
+              {
+                id: 23,
+                unit_id: 101,
+                qtype: "short",
+                stem: "为什么说长上下文服务的瓶颈通常是显存容量而不是算力？",
+                options: [],
+                knowledge_point: "Prefill/Decode 画像差异",
+              },
+            ];
+          },
+          regenerate_quiz: function () {
+            return HANDLERS.generate_quiz({});
+          },
+          submit_answer: function (args) {
+            // GradeResult：correct / reference_answer / explanation
+            var out =
+              args && args.givenAnswer && String(args.givenAnswer).indexOf("显存碎片") >= 0;
+            return {
+              correct: out,
+              reference_answer: "显存碎片导致的容量浪费（PagedAttention 把 KV Cache 分页，碎片率 60%–80% → 4%）",
+              explanation: out
+                ? "答对了。PagedAttention 借鉴虚拟内存分页，用 block table 做逻辑到物理的映射。"
+                : "注意区分：它解决的是**显存碎片**（容量浪费），不是延迟，也不是通信开销。",
+            };
+          },
+          start_review: function (args) {
+            var item = TODAY.due_reviews.filter(function (r) {
+              return r.id === (args && args.itemId);
+            })[0] || TODAY.due_reviews[0];
+            return {
+              item: item,
+              question: item.question_id ? QUESTIONS[item.question_id] || null : null,
+            };
+          },
+          submit_review: function () {
+            return null;
+          },
+          get_sync_settings: function () {
+            return SYNC_SETTINGS;
+          },
+          save_sync_settings: function () {
+            return null;
+          },
+          test_sync_connection: function () {
+            return { ok: true, message: "连接成功（harness mock）" };
+          },
+          get_sync_local_stats: function () {
+            return LOCAL_STATS;
+          },
+          sync_upload: function () {
+            return { ok: true, message: "备份完成（harness mock）", bytes: 63488 };
+          },
+          sync_list_remote: function () {
+            return [];
+          },
+          sync_restore: function () {
+            return { ok: true, message: "已恢复（harness mock）", bytes: 0 };
+          },
+          // 自动同步：没开关、没脏数据 → null
+          sync_auto_flush: function () {
+            return null;
+          },
+          // 文件选择框：返回 null = 用户取消，避免真的往页面里塞状态
+          "plugin:dialog|open": function () {
+            return null;
+          },
+          "plugin:dialog|save": function () {
+            return null;
+          },
+          "plugin:dialog|message": function () {
+            return null;
+          },
+          // 窗口 chrome（main.ts 拖窗/双击缩放才会用，截图流程不触发，留兜底）
+          "plugin:window|start_dragging": function () {
+            return null;
+          },
+          "plugin:window|toggle_maximize": function () {
+            return null;
+          },
+          "plugin:window|is_fullscreen": function () {
+            return false;
+          },
+        };
+
+        function invoke(cmd, args, options) {
+          var h = HANDLERS[cmd];
+          if (!h) {
+            console.warn("[harness] 未 mock 的命令：" + cmd, args);
+            return Promise.resolve(null);
+          }
+          var out;
+          try {
+            out = h(args || {}, options);
+          } catch (e) {
+            return Promise.reject(String(e && e.message ? e.message : e));
+          }
+          // 留一帧：让 loading 态真的走一遍，同时也更接近真实 IPC 的异步语义
+          return delay(out, 1);
+        }
+
+        window.__TAURI_INTERNALS__ = {
+          invoke: invoke,
+          transformCallback: transformCallback,
+          unregisterCallback: unregisterCallback,
+          runCallback: runCallback,
+          callbacks: callbacks,
+          convertFileSrc: convertFileSrc,
+          // getCurrentWindow() / getCurrentWebview() 读这里（window.js:110、webview.js:53）
+          metadata: {
+            currentWindow: { label: "main" },
+            currentWebview: { windowLabel: "main", label: "main" },
+          },
+        };
+        // isTauri() 看 globalThis.isTauri（core.js:478）
+        window.isTauri = true;
+
+        // ---------- ?scroll=N：截图前把内容区滚到 N px ----------
+        // 用于看"功能区（chrome）盖在滚动内容上"的效果——Liquid Glass 的核心卖点：
+        // 悬浮钮/Tab 栏/running head 背后必须真的有过内容经过，才看得出模糊与厚度。
+        // 阅读页两列各自内部滚动（.main-col / .ai-col），其他页面滚 .main。
+        var scrollTo = parseInt(q.get("scroll") || "0", 10);
+        if (scrollTo > 0) {
+          var tryScroll = function () {
+            var el =
+              document.querySelector(".main-col") ||
+              document.querySelector(".main .n-layout-scroll-container") ||
+              document.querySelector(".main");
+            if (el && el.scrollHeight > el.clientHeight) {
+              el.scrollTop = scrollTo;
+              return true;
+            }
+            return false;
+          };
+          document.addEventListener("DOMContentLoaded", function () {
+            // 等路由懒加载 + mock 数据渲染完（轮询直到能滚或者超时）
+            var tries = 0;
+            var iv = setInterval(function () {
+              tries += 1;
+              if (tryScroll() || tries > 100) clearInterval(iv);
+            }, 50);
+          });
+        }
+
+        // ---------- 截图辅助：等页面稳定 ----------
+        // capture.sh 通过 --virtual-time-budget 推进时间；这里额外暴露一个
+        // 可观测标记，方便手工调试时判断"数据已渲染"。
+        window.__HARNESS_READY__ = false;
+        document.addEventListener("DOMContentLoaded", function () {
+          var tries = 0;
+          var iv = setInterval(function () {
+            tries += 1;
+            var app = document.getElementById("app");
+            if (app && app.children.length > 0) {
+              window.__HARNESS_READY__ = true;
+              clearInterval(iv);
+            } else if (tries > 200) {
+              clearInterval(iv);
+            }
+          }, 50);
+        });
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

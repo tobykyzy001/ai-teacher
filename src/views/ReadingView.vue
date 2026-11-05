@@ -40,7 +40,7 @@
           <!-- 翻章箭头：贴正文列左右外缘、钉在视口中线，左右位置由 colRect 实测写入 -->
           <div
             v-if="chapter.prev_chapter_unit_id"
-            class="side-arrow left"
+            class="side-arrow left glass-control mat-press"
             :style="{ left: colRect.left + 'px' }"
             title="上一章（←）"
             role="button"
@@ -51,7 +51,7 @@
           </div>
           <div
             v-if="chapter.next_chapter_unit_id"
-            class="side-arrow right"
+            class="side-arrow right glass-control mat-press"
             :style="{ right: colRect.right + 'px' }"
             title="下一章（→）"
             role="button"
@@ -94,7 +94,7 @@
                  返回书库不设独立按钮——侧栏「书架」已是常驻导航，
                  阅读页再放一个语义重复的 ‹ 圆钮只会跟 Aa 挤在一起 -->
             <button
-              class="aa-fab"
+              class="aa-fab glass-control mat-press"
               title="阅读设置"
               aria-label="阅读设置"
               @click="settingsOpen = !settingsOpen"
@@ -266,7 +266,7 @@
     </template>
 
     <!-- 手机端：正文纯净阅读——闯关/AI 收进底部学习助手抽屉（Glass action sheet） -->
-    <button v-if="isNarrow" class="ai-fab" title="学习助手" @click="assistantOpen = true">
+    <button v-if="isNarrow" class="ai-fab glass-chrome mat-press" title="学习助手" @click="assistantOpen = true">
       AI
     </button>
     <n-drawer
@@ -1133,11 +1133,13 @@ function renderMarkdown(src: string): string {
   }
 }
 
-/* 翻章箭头：悬浮小圆钮，钉在视口中线（无论正文多长都不随滚动跑）——功能层 glass */
+/* 翻章箭头：悬浮小圆钮，钉在视口中线（无论正文多长都不随滚动跑）——功能层 control 档。
+   材质与按压走公共契约（.glass-control + .mat-press），这里只写它独占的几何。
+   ⚠ 圆钮已自带 translateY(-50%) 居中，按压的 scale 必须写在一起合并，
+   否则任一条 transform 都会把对方覆盖掉（旧版没有 :active，按下完全没反应）。 */
 .side-arrow {
   position: fixed;
   top: 50%;
-  transform: translateY(-50%);
   z-index: 20;
   width: 32px;
   height: 32px;
@@ -1148,29 +1150,29 @@ function renderMarkdown(src: string): string {
   font-size: 22px;
   font-weight: 300;
   line-height: 1;
-  /* 背景透明时 iOS 原生控件会画成方块，必须给底色 */
+  /* 背景透明时 iOS 原生控件会画成方块，必须给底色 ——
+     底色/模糊/边缘/投影全部来自类 .glass-control，按压来自 .mat-press，
+     这里不重复声明任何材质属性（单一来源，改一处全站生效） */
   color: var(--label-2);
-  background: var(--glass-sheen), var(--glass-bg);
-  -webkit-backdrop-filter: blur(20px) saturate(170%);
-  backdrop-filter: blur(20px) saturate(170%);
-  border: none;
-  box-shadow:
-    var(--glass-rim),
-    0 1px 6px rgba(0, 0, 0, 0.1);
   outline: none;
   opacity: 1;
   cursor: pointer;
   user-select: none;
-  transition:
-    background var(--dur-fast) ease,
-    color var(--dur-fast) ease;
+  /* 居中位移必须常驻；.mat-press:active 的 scale 会在下面合并进来 */
+  transform: translateY(-50%);
 }
 
 /* 左右位置由脚本按正文列实际矩形写入内联 left，保证始终贴正文列外缘 */
 
-.side-arrow:hover,
+.side-arrow:hover:not(:active),
+.side-arrow:active,
 .side-arrow:focus-visible {
   color: var(--accent);
+}
+
+/* 按压时把 scale 与常驻的 translateY 合并（scoped 特异性高于 .mat-press，故胜出） */
+.side-arrow:active {
+  transform: translateY(-50%) scale(0.9);
 }
 
 /* 阅读页自身是定高的网格单行（外层 .main 与其内部 .n-layout-scroll-container 的高度链见 App.vue）；
@@ -1201,12 +1203,12 @@ function renderMarkdown(src: string): string {
   gap: 14px;
   padding: 10px 12px;
   margin-bottom: var(--space-4);
-  background: var(--glass-sheen), var(--glass-bg);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border: none;
+  /* 这条设置条**在文档流里跟着正文一起滚**（不是浮在内容之上的 chrome），
+     所以按 HIG 归内容层：标准材质、零玻璃、零投影。之前给它玻璃 + 投影，
+     等于凭空造出一个"悬浮面板"，跟下面的正文卡片反而对不齐。 */
+  background: var(--bg-grouped-2);
+  border: 0.5px solid var(--separator);
   border-radius: var(--radius-card);
-  box-shadow: var(--glass-rim), var(--glass-drop);
 }
 
 .theme-group {
@@ -1225,8 +1227,15 @@ function renderMarkdown(src: string): string {
   transition: transform var(--dur-fast) var(--spring), box-shadow var(--dur-fast) ease;
 }
 
-.theme-btn:hover {
+.theme-btn:hover:not(:active) {
   transform: scale(1.12);
+}
+
+/* 与设置页色板同一套按压语言：24px 更小，缩得更狠才看得出来 */
+.theme-btn:active {
+  transform: scale(0.88);
+  transition:
+    transform 220ms var(--spring);
 }
 
 /* 竖向分隔：把"配色主题"与"跟随系统"分成两组（与设置页同一套语义）。
@@ -1384,15 +1393,11 @@ function renderMarkdown(src: string): string {
   height: 56px;
   border-radius: 50%;
   border: none;
-  background: var(--glass-sheen), var(--glass-bg);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-  box-shadow: var(--glass-rim), var(--glass-drop);
+  /* 56px 大圆、背后是滚动正文 → 类 .glass-chrome（大面档） */
   color: var(--label);
   font-size: var(--text-subhead);
   font-weight: 600;
   cursor: pointer;
-  transition: transform var(--dur-fast) var(--spring);
 }
 
 .ai-fab:active {
@@ -1410,21 +1415,15 @@ function renderMarkdown(src: string): string {
   height: 36px;
   border-radius: 50%;
   border: none;
-  background: var(--glass-sheen), var(--glass-bg);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-  box-shadow:
-    var(--glass-rim),
-    0 2px 8px rgba(0, 0, 0, 0.08);
+  /* 小面 → 类 .glass-control */
   color: var(--label-2);
   font-size: var(--text-footnote);
   font-weight: 600;
   cursor: pointer;
-  transition: transform var(--dur-fast) var(--spring);
 }
 
 .aa-fab:active {
-  transform: scale(0.94);
+  transform: scale(0.9);
 }
 
 
@@ -1466,10 +1465,15 @@ function renderMarkdown(src: string): string {
     justify-content: center;
     margin: 0 -40px 4px;
     padding: 40px 16px 8px;
-    background: var(--glass-bg);
-    -webkit-backdrop-filter: var(--glass-blur);
-    backdrop-filter: var(--glass-blur);
-    border-bottom: 0.5px solid var(--separator);
+    /* running head = 大面 chrome 档。
+       ⚠ 底边必须是一道**可见**的发丝线：这条栏是满幅贴边的，左右两条竖向边缘
+       在屏幕外，唯一能表达"这里有一条浮起来的栏、下面是滚动内容"的就是底边。
+       曾试过只用 --mat-shade（rgba(0,0,0,.05)），实测在 #f2f2f7 上完全看不见，
+       整条栏和页面糊成一片 —— 分隔线不是装饰，是这条栏的边界语义。 */
+    background-color: var(--mat-chrome-fill);
+    -webkit-backdrop-filter: var(--mat-chrome-blur);
+    backdrop-filter: var(--mat-chrome-blur);
+    box-shadow: inset 0 -0.5px 0 var(--separator);
   }
 
   .read-col .page-header > div:first-child {

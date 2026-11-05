@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>玻璃材质对照 · glass swatches</title>
+    <!-- 工作树当前的样式表原文（Vite 的 ?direct 不做任何加工）。
+         这样 new/* 读到的 --mat-* 永远是真身，不是抄来的快照。 -->
+    <link rel="stylesheet" href="/src/style.css?direct" />
+    <link rel="stylesheet" href="recipes.css" />
+    <!--
+      静态对照页，不 import 任何 Vue / 应用代码。
+      配方来自 recipes.css：old/* 冻结自 HEAD，new/* 读工作树 --mat-*。
+
+      用法：
+        swatches.html                  → 亮色令牌
+        swatches.html?theme=night      → 夜黑令牌（给 <html> 打 data-theme）
+
+      ============================ 布局为什么长这样 ============================
+      关键约束：**每个格子必须坐在完全相同的背景上**，否则横向比较无意义。
+
+      第一版是"一条横向渐变带 + 一行 4 个格子"，结果四个格子分别落在
+      橙 / 浅粉 / 蓝 / 绿四段渐变上（实测 x=30 → (253,215,199)，
+      x=538 → (144,152,221)）—— 那时量出来的"透色差异"其实是**背景本身不同**，
+      不是材质差异。整页数据因此作废。
+
+      现在：每个格子的背景由它自己的 ::before 画（同一张 240×120 的"照片底"
+      按 tile 尺寸 repeat），所以任意两个格子的底是逐像素一致的；
+      材质层再盖在上面。左侧另有一条"裸底"对照列（无材质），
+      用来确认材质到底透过来多少。
+      ==========================================================================
+    -->
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+          "Microsoft YaHei", sans-serif;
+        font-size: 12px;
+        color: #1d1d1f;
+      }
+
+      .doc-head {
+        padding: 14px 20px 10px;
+        background: #fff;
+        border-bottom: 0.5px solid rgba(60, 60, 67, 0.29);
+      }
+      .doc-head h1 {
+        margin: 0 0 4px;
+        font-size: 17px;
+        font-weight: 700;
+      }
+      .doc-head p {
+        margin: 0;
+        color: rgba(60, 60, 67, 0.6);
+        font-size: 11px;
+        line-height: 1.55;
+      }
+      .doc-head code {
+        background: rgba(120, 120, 128, 0.12);
+        padding: 0 3px;
+        border-radius: 3px;
+      }
+
+      .band {
+        padding: 12px 20px 16px;
+        border-bottom: 0.5px solid rgba(60, 60, 67, 0.18);
+      }
+      .band-label {
+        font-size: 11px;
+        font-weight: 600;
+        margin-bottom: 8px;
+      }
+      .band-label span {
+        font-weight: 400;
+        opacity: 0.62;
+      }
+
+      /* 每行：若干 240x120 格子。每个格子内部结构固定两层——
+           .tile  = **底**（背景画在这里）
+           .mat   = **材质层**（recipes.css 的类挂在这一层，inset:0 盖住底）
+         这就是"玻璃盖在内容上"的真实结构，backdrop-filter 模糊的也正是这个底。
+         因为每格的底是同一张 240x120 图、同一位置，任意两格的底逐像素一致，
+         横向比较才成立。（第一版把底画成一条跨屏渐变，四格落在不同颜色上，
+         量出来的"材质差异"其实是背景差异 —— 那版数据已作废。） */
+      .grid {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      .tile {
+        position: relative;
+        /* 232px：1280 宽窗口下正好 5 个一行（5*232 + 4*12 = 1208 ≤ 1240 可用宽），
+           于是每带自然排成 "bare + old×4" / "new×4" 两行，不会出现 4/4/1 的孤格。 */
+        width: 232px;
+        height: 120px;
+        border-radius: 12px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+        text-align: center;
+      }
+
+      /* 底：三种背景，尺寸都锁在 240x120 */
+      .bg-white {
+        background: #f2f2f7;
+      }
+      .bg-dark {
+        background: #1c1c1e;
+      }
+      .bg-photo {
+        background-image:
+          radial-gradient(circle at 14% 26%, rgba(255, 133, 66, 0.98), transparent 36%),
+          radial-gradient(circle at 40% 74%, rgba(60, 112, 235, 0.96), transparent 40%),
+          radial-gradient(circle at 68% 20%, rgba(48, 196, 148, 0.96), transparent 38%),
+          radial-gradient(circle at 90% 70%, rgba(202, 74, 208, 0.96), transparent 36%),
+          linear-gradient(135deg, #24314a, #6a4769 46%, #33544a);
+        background-size: 232px 120px;
+        background-repeat: no-repeat;
+      }
+
+      /* 材质层：类名由 recipes.css 提供，这里只负责"铺满格子、压在底之上" */
+      .mat {
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        z-index: 1;
+      }
+
+      /* 文字压在最上层 */
+      .tile-name,
+      .tile-note {
+        position: relative;
+        z-index: 2;
+        padding: 0 8px;
+      }
+      .tile-name {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 10px;
+        font-weight: 700;
+      }
+      .tile-note {
+        font-size: 9.5px;
+        line-height: 1.35;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        opacity: 0.75;
+      }
+
+      /* 标签必须**无条件可读**：暗带里 light 令牌（白 80%）压在 #1c1c1e 上会变成
+         浅灰块，白字就消失了；照片带里底色深浅不一，深字也可能糊掉。
+         所以标签自带一块半透明黑底 + 白字，与下面的材质无关。 */
+      .tile-name,
+      .tile-note {
+        color: #fff;
+        background: rgba(0, 0, 0, 0.62);
+        border-radius: 4px;
+        padding: 1px 5px;
+        text-shadow: none;
+      }
+      .tile-note {
+        background: rgba(0, 0, 0, 0.5);
+      }
+
+      /* "裸底" = 没有材质层，直接看底 */
+    </style>
+  </head>
+  <body>
+    <div class="doc-head">
+      <h1>玻璃材质对照 · old / new</h1>
+      <p>
+        <code>old/*</code> = <code>git show HEAD</code> 冻结的配方；
+        <code>new/*</code> = 材质系统 v5 的 <code>--mat-*</code>（直接读 <code>/src/style.css</code>）。
+        <b>每个格子的背景逐像素相同</b>（各自画同一张底），所以横向差异只可能来自材质；
+        每带第一个是"裸底"对照。
+        <br />
+        材质系统 v5 把控件分成两类：<b><code>new/ctl-*</code> = 页面按钮</b>（纯灰 <code>--ctl-*</code>，不做玻璃，因为背后没有内容可透）；
+        <b><code>new/glass-*</code> = 浮在内容之上的控件</b>（侧栏收放钮/翻章箭头/Aa 钮，才用 <code>--mat-*</code> 玻璃）。
+      </p>
+    </div>
+
+    <!-- =================== 背景 A：近白 =================== -->
+    <section class="band">
+      <div class="band-label">背景 A · #F2F2F7 <span>（近白：最看不出玻璃，差异只能来自边缘与投影）</span></div>
+      <div class="grid">
+        <div class="tile bg-white"><div class="mat bare"></div>
+          <span class="tile-name">bare</span>
+          <span class="tile-note">无材质<br />底的样子</span>
+        </div>
+        <div class="tile bg-white"><div class="mat old-chrome-button"></div>
+          <span class="tile-name">old/chrome-button</span>
+          <span class="tile-note">HEAD .glass<br />sheen + 28px blur + rim</span>
+        </div>
+        <div class="tile bg-white"><div class="mat old-default-button"></div>
+          <span class="tile-name">old/default-button</span>
+          <span class="tile-note">HEAD .n-button<br />18px + brightness 1.04</span>
+        </div>
+        <div class="tile bg-white"><div class="mat old-tinted"></div>
+          <span class="tile-name">old/tinted</span>
+          <span class="tile-note">HEAD .btn-tinted<br />sheen + accent-fill</span>
+        </div>
+        <div class="tile bg-white"><div class="mat old-side-arrow"></div>
+          <span class="tile-name">old/side-arrow</span>
+          <span class="tile-note">HEAD 阅读页<br />20px saturate 170%</span>
+        </div>
+        <div class="tile bg-white"><div class="mat new-chrome"></div>
+          <span class="tile-name">new/chrome</span>
+          <span class="tile-note">fill: --mat-chrome-fill<br />blur: --mat-chrome-blur</span>
+        </div>
+        <div class="tile bg-white"><div class="mat ctl-pill"></div>
+          <span class="tile-name">new/ctl-pill</span>
+          <span class="tile-note">按钮 = 平面 --ctl-fill<br />无模糊无投影</span>
+        </div>
+        <div class="tile bg-white"><div class="mat new-control"></div>
+          <span class="tile-name">new/glass-control</span>
+          <span class="tile-note">仅浮层控件<br />--mat-control-fill</span>
+        </div>
+        <div class="tile bg-white"><div class="mat new-overlay"></div>
+          <span class="tile-name">new/overlay</span>
+          <span class="tile-note">fill: --mat-overlay-fill<br />blur: --mat-overlay-blur</span>
+        </div>
+        <div class="tile bg-white"><div class="mat new-press"></div>
+          <span class="tile-name">new/press</span>
+          <span class="tile-note">fill-active + float-press<br />（缩放见 states.png）</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- =================== 背景 B：照片感高频 =================== -->
+    <section class="band">
+      <div class="band-label">背景 B · 彩色高频"照片"底 <span>（玻璃糊成奶白、边缘泛脏，在这里最明显）</span></div>
+      <div class="grid">
+        <div class="tile bg-photo"><div class="mat bare"></div>
+          <span class="tile-name">bare</span>
+          <span class="tile-note">无材质<br />对照：原图有多花</span>
+        </div>
+        <div class="tile bg-photo"><div class="mat old-chrome-button"></div>
+          <span class="tile-name">old/chrome-button</span>
+          <span class="tile-note">sheen 会不会把底提成奶斑</span>
+        </div>
+        <div class="tile bg-photo"><div class="mat old-default-button"></div>
+          <span class="tile-name">old/default-button</span>
+          <span class="tile-note">brightness 1.04 在高饱和底偏色？</span>
+        </div>
+        <div class="tile bg-photo"><div class="mat old-tinted"></div>
+          <span class="tile-name">old/tinted</span>
+          <span class="tile-note">灰 tint 叠彩底的综合色</span>
+        </div>
+        <div class="tile bg-photo"><div class="mat old-side-arrow"></div>
+          <span class="tile-name">old/side-arrow</span>
+          <span class="tile-note">saturate 170% 色偏刺眼？</span>
+        </div>
+        <div class="tile bg-photo"><div class="mat new-chrome"></div>
+          <span class="tile-name">new/chrome</span>
+          <span class="tile-note">高实度：文字还压得住吗</span>
+        </div>
+        <div class="tile bg-photo"><div class="mat ctl-pill"></div>
+          <span class="tile-name">new/ctl-pill</span>
+          <span class="tile-note">按钮不走玻璃：彩底不透过来</span>
+        </div>
+        <div class="tile bg-photo"><div class="mat new-control"></div>
+          <span class="tile-name">new/glass-control</span>
+          <span class="tile-note">12px 模糊：细节保留多少</span>
+        </div>
+        <div class="tile bg-photo"><div class="mat new-overlay"></div>
+          <span class="tile-name">new/overlay</span>
+          <span class="tile-note">最高实度：能否压住任意内容</span>
+        </div>
+        <div class="tile bg-photo"><div class="mat new-press"></div>
+          <span class="tile-name">new/press</span>
+          <span class="tile-note">fill-active 压在彩底上够暗吗</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- =================== 背景 C：暗底 =================== -->
+    <section class="band">
+      <div class="band-label">背景 C · #1c1c1e <span>（夜黑 --bg-grouped-2：暗底靠"比背景亮"，投影几乎无效）</span></div>
+      <div class="grid">
+        <div class="tile bg-dark"><div class="mat bare"></div>
+          <span class="tile-name">bare</span>
+          <span class="tile-note">无材质<br />纯 #1c1c1e</span>
+        </div>
+        <div class="tile bg-dark"><div class="mat old-chrome-button"></div>
+          <span class="tile-name">old/chrome-button</span>
+          <span class="tile-note">亮色令牌直接放暗底</span>
+        </div>
+        <div class="tile bg-dark"><div class="mat old-default-button"></div>
+          <span class="tile-name">old/default-button</span>
+          <span class="tile-note">同上（HEAD 亮色配方）</span>
+        </div>
+        <div class="tile bg-dark"><div class="mat old-tinted"></div>
+          <span class="tile-name">old/tinted</span>
+          <span class="tile-note">accent 字色在暗底上的对比</span>
+        </div>
+        <div class="tile bg-dark"><div class="mat old-side-arrow"></div>
+          <span class="tile-name">old/side-arrow</span>
+          <span class="tile-note">同上</span>
+        </div>
+        <div class="tile bg-dark"><div class="mat new-chrome"></div>
+          <span class="tile-name">new/chrome</span>
+          <span class="tile-note">夜黑 fill：比背景亮一档</span>
+        </div>
+        <div class="tile bg-dark"><div class="mat ctl-pill"></div>
+          <span class="tile-name">new/ctl-pill</span>
+          <span class="tile-note">夜黑 --ctl-fill（纯灰）</span>
+        </div>
+        <div class="tile bg-dark"><div class="mat new-control"></div>
+          <span class="tile-name">new/glass-control</span>
+          <span class="tile-note">夜黑 mat fill + 亮 edge</span>
+        </div>
+        <div class="tile bg-dark"><div class="mat new-overlay"></div>
+          <span class="tile-name">new/overlay</span>
+          <span class="tile-note">夜黑 overlay-fill</span>
+        </div>
+        <div class="tile bg-dark"><div class="mat new-press"></div>
+          <span class="tile-name">new/press</span>
+          <span class="tile-note">夜黑 fill-active</span>
+        </div>
+      </div>
+    </section>
+
+    <script>
+      // ?theme=night → 给 <html> 打 data-theme，让真实样式表的 [data-theme="night"]
+      // 覆盖 --mat-* 令牌（和 app 里切主题完全同一机制）。不要在这里手写夜黑取值。
+      (function () {
+        var q = new URLSearchParams(location.search);
+        if (q.get("theme") === "night") {
+          document.documentElement.setAttribute("data-theme", "night");
+        }
+      })();
+    </script>
+  </body>
+</html>

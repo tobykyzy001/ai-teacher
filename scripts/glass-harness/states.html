@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>按压契约验证 · states</title>
+    <!-- 工作树当前样式表原文：--mat-* / --ctl-* 令牌从这里来，不抄快照 -->
+    <link rel="stylesheet" href="/src/style.css?direct" />
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+          sans-serif;
+        font-size: 12px;
+        background: #f2f2f7;
+        color: #1d1d1f;
+      }
+      .head {
+        padding: 12px 20px 9px;
+        background: #fff;
+        border-bottom: 0.5px solid rgba(60, 60, 67, 0.29);
+      }
+      .head h1 {
+        margin: 0 0 3px;
+        font-size: 16px;
+        font-weight: 700;
+      }
+      .head p {
+        margin: 0;
+        font-size: 10.5px;
+        line-height: 1.5;
+        color: rgba(60, 60, 67, 0.65);
+      }
+      .head code {
+        background: rgba(120, 120, 128, 0.13);
+        padding: 0 3px;
+        border-radius: 3px;
+        font-size: 10px;
+      }
+
+      section {
+        padding: 10px 20px 12px;
+        border-bottom: 0.5px solid rgba(60, 60, 67, 0.18);
+      }
+      .on-white {
+        background: #f2f2f7;
+      }
+      .on-dark {
+        background: #1c1c1e;
+        color: #f5f5f7;
+      }
+      .sec-title {
+        font-size: 11px;
+        font-weight: 600;
+        margin-bottom: 8px;
+      }
+      .sec-title em {
+        font-style: normal;
+        font-weight: 400;
+        opacity: 0.6;
+      }
+
+      .row {
+        display: flex;
+        align-items: flex-start;
+        gap: 24px;
+        margin-bottom: 12px;
+      }
+      .row-tag {
+        width: 104px;
+        flex-shrink: 0;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 9.5px;
+        opacity: 0.72;
+        padding-top: 12px;
+        line-height: 1.4;
+      }
+      .cell {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 3px;
+        width: 112px;
+      }
+      .cell-label {
+        font-size: 9.5px;
+        font-weight: 700;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .cell-token {
+        font-size: 8px;
+        opacity: 0.5;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        text-align: center;
+        line-height: 1.25;
+      }
+
+      /* ==========================================================
+         家族 1：**平面控件**（页面按钮）——纯 --ctl-* 灰填充，不模糊
+         与 style.css 的 .n-button--default-type / .btn-icon-circle 同参
+         ========================================================== */
+      .flat-circle {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 15px;
+        line-height: 1;
+        border: none;
+        background-color: var(--ctl-fill);
+        color: var(--label-2);
+        box-shadow: var(--ctl-edge);
+      }
+      .flat-circle.is-hover {
+        background-color: var(--ctl-fill-hover);
+        color: var(--accent);
+      }
+      .flat-circle.is-active {
+        background-color: var(--ctl-fill-active);
+        box-shadow: none;
+        transform: scale(0.9); /* 图标钮压得比胶囊狠：小目标需要更强形变 */
+      }
+      .flat-circle.is-focus {
+        outline: 2px solid var(--color-focus-ring, rgba(29, 29, 31, 0.24));
+        outline-offset: 2px;
+      }
+
+      .flat-pill {
+        height: 36px;
+        padding: 0 16px;
+        border-radius: 999px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        font-weight: 500;
+        border: none;
+        background-color: var(--ctl-fill);
+        color: var(--label);
+        box-shadow: var(--ctl-edge);
+      }
+      .flat-pill.is-hover {
+        background-color: var(--ctl-fill-hover);
+      }
+      .flat-pill.is-active {
+        background-color: var(--ctl-fill-active);
+        box-shadow: none;
+        transform: scale(0.96);
+      }
+      .flat-pill.is-focus {
+        outline: 2px solid var(--color-focus-ring, rgba(29, 29, 31, 0.24));
+        outline-offset: 2px;
+      }
+
+      /* tinted 胶囊：accent 淡底，不模糊、无投影 */
+      .tinted-pill {
+        height: 34px;
+        padding: 0 16px;
+        border-radius: 999px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        font-weight: 600;
+        border: none;
+        background-color: var(--accent-fill);
+        color: var(--accent);
+      }
+      .tinted-pill.is-hover {
+        background-color: var(--fill-1);
+      }
+      .tinted-pill.is-active {
+        background-color: var(--fill-2);
+        transform: scale(0.96);
+      }
+      .tinted-pill.is-focus {
+        outline: 2px solid var(--color-focus-ring, rgba(29, 29, 31, 0.24));
+        outline-offset: 2px;
+      }
+
+      /* ==========================================================
+         家族 2：**玻璃控件**（浮在内容之上）——.glass-control 同参
+         侧栏收放钮 .edge-fab / 翻章箭头 .side-arrow / Aa 钮
+         ========================================================== */
+      .glass-circle {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 15px;
+        line-height: 1;
+        border: none;
+        background-color: var(--mat-control-fill);
+        -webkit-backdrop-filter: var(--mat-control-blur);
+        backdrop-filter: var(--mat-control-blur);
+        color: var(--label-2);
+        box-shadow:
+          var(--mat-specular),
+          var(--mat-shade),
+          var(--mat-edge),
+          var(--mat-float-sm);
+      }
+      .glass-circle.is-hover {
+        background-color: var(--mat-control-fill-hover);
+      }
+      .glass-circle.is-active {
+        background-color: var(--mat-control-fill-active);
+        box-shadow:
+          var(--mat-specular),
+          var(--mat-float-press);
+        transform: scale(0.9);
+      }
+      .glass-circle.is-focus {
+        outline: 2px solid var(--color-focus-ring, rgba(29, 29, 31, 0.24));
+        outline-offset: 2px;
+      }
+
+      /* 暗底上 focus 圈翻白，否则看不见 */
+      .on-dark .is-focus {
+        outline-color: rgba(255, 255, 255, 0.45);
+      }
+
+      /* 浮层质感参照：把"背后有内容"这件事画出来（玻璃只有这样才看得出意义） */
+      .behind {
+        position: relative;
+        padding: 8px 10px;
+        border-radius: 10px;
+        background-image:
+          repeating-linear-gradient(
+            45deg,
+            rgba(255, 138, 76, 0.85) 0 7px,
+            rgba(70, 110, 230, 0.85) 7px 14px
+          );
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+
+      .verdict {
+        font-size: 9.5px;
+        line-height: 1.5;
+        opacity: 0.75;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        margin-top: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="head">
+      <h1>按压契约 · states（rest / hover / active / focus）</h1>
+      <p>
+        取值全部读工作树当前的 <code>--ctl-*</code> / <code>--mat-*</code>，不抄快照。headless 截不到真实
+        <code>:hover</code>/<code>:active</code>，故四态静态并排。
+        <b>判据：rest→active 必须一眼看出不同</b>（底色换 active 档 + 投影收掉 + 缩小）；若两者几乎一样，就是"点了没反馈"。
+        两类控件要分开看：<b>页面按钮走纯灰 <code>--ctl-*</code>（不做玻璃）</b>，<b>只有浮在内容之上的控件才用 <code>--mat-*</code> 玻璃</b>。
+      </p>
+    </div>
+
+    <!-- ============ 亮色 · 平面控件（页面按钮） ============ -->
+    <section class="on-white">
+      <div class="sec-title">亮色 · 平面控件 <em>（页面按钮：纯灰填充，backdrop-filter 为 none）· 底 #F2F2F7</em></div>
+
+      <div class="row">
+        <span class="row-tag">32 圆钮<br />.btn-icon-circle</span>
+        <div class="cell">
+          <div class="flat-circle">↻</div>
+          <span class="cell-label">rest</span><span class="cell-token">--ctl-fill</span>
+        </div>
+        <div class="cell">
+          <div class="flat-circle is-hover">↻</div>
+          <span class="cell-label">hover</span><span class="cell-token">--ctl-fill-hover</span>
+        </div>
+        <div class="cell">
+          <div class="flat-circle is-active">↻</div>
+          <span class="cell-label">active</span><span class="cell-token">--ctl-fill-active<br />scale(.9)</span>
+        </div>
+        <div class="cell">
+          <div class="flat-circle is-focus">↻</div>
+          <span class="cell-label">focus</span><span class="cell-token">材质不变<br />仅外圈</span>
+        </div>
+      </div>
+
+      <div class="row">
+        <span class="row-tag">36 胶囊<br />.n-button default</span>
+        <div class="cell">
+          <div class="flat-pill">开始学习</div>
+          <span class="cell-label">rest</span><span class="cell-token">--ctl-fill</span>
+        </div>
+        <div class="cell">
+          <div class="flat-pill is-hover">开始学习</div>
+          <span class="cell-label">hover</span><span class="cell-token">--ctl-fill-hover</span>
+        </div>
+        <div class="cell">
+          <div class="flat-pill is-active">开始学习</div>
+          <span class="cell-label">active</span><span class="cell-token">--ctl-fill-active<br />scale(.96)</span>
+        </div>
+        <div class="cell">
+          <div class="flat-pill is-focus">开始学习</div>
+          <span class="cell-label">focus</span><span class="cell-token">材质不变<br />仅外圈</span>
+        </div>
+      </div>
+
+      <div class="row">
+        <span class="row-tag">34 tinted<br />.btn-tinted</span>
+        <div class="cell">
+          <div class="tinted-pill">开始复习</div>
+          <span class="cell-label">rest</span><span class="cell-token">--accent-fill</span>
+        </div>
+        <div class="cell">
+          <div class="tinted-pill is-hover">开始复习</div>
+          <span class="cell-label">hover</span><span class="cell-token">--fill-1</span>
+        </div>
+        <div class="cell">
+          <div class="tinted-pill is-active">开始复习</div>
+          <span class="cell-label">active</span><span class="cell-token">--fill-2<br />scale(.96)</span>
+        </div>
+        <div class="cell">
+          <div class="tinted-pill is-focus">开始复习</div>
+          <span class="cell-label">focus</span><span class="cell-token">材质不变<br />仅外圈</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 亮色 · 玻璃控件（浮在内容上） ============ -->
+    <section class="on-white">
+      <div class="sec-title">亮色 · 玻璃控件 <em>（.glass-control：浮在滚动内容之上 · 条纹=背后的内容）</em></div>
+
+      <div class="row">
+        <span class="row-tag">32 玻璃圆钮<br />.edge-fab / .side-arrow</span>
+        <div class="behind">
+          <div class="cell">
+            <div class="glass-circle">‹</div>
+            <span class="cell-label">rest</span><span class="cell-token">--mat-control-fill</span>
+          </div>
+          <div class="cell">
+            <div class="glass-circle is-hover">‹</div>
+            <span class="cell-label">hover</span><span class="cell-token">-fill-hover</span>
+          </div>
+          <div class="cell">
+            <div class="glass-circle is-active">‹</div>
+            <span class="cell-label">active</span><span class="cell-token">-fill-active<br />scale(.9)</span>
+          </div>
+          <div class="cell">
+            <div class="glass-circle is-focus">‹</div>
+            <span class="cell-label">focus</span><span class="cell-token">材质不变<br />仅外圈</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 夜黑 ============ -->
+    <section class="on-dark" data-theme="night">
+      <div class="sec-title">夜黑 · 平面控件 <em>（section[data-theme="night"]，同 app 切主题机制）· 底 #1c1c1e</em></div>
+
+      <div class="row">
+        <span class="row-tag">32 圆钮</span>
+        <div class="cell">
+          <div class="flat-circle">↻</div>
+          <span class="cell-label">rest</span><span class="cell-token">--ctl-fill</span>
+        </div>
+        <div class="cell">
+          <div class="flat-circle is-hover">↻</div>
+          <span class="cell-label">hover</span><span class="cell-token">-fill-hover</span>
+        </div>
+        <div class="cell">
+          <div class="flat-circle is-active">↻</div>
+          <span class="cell-label">active</span><span class="cell-token">-fill-active<br />scale(.9)</span>
+        </div>
+        <div class="cell">
+          <div class="flat-circle is-focus">↻</div>
+          <span class="cell-label">focus</span><span class="cell-token">材质不变<br />仅外圈</span>
+        </div>
+      </div>
+
+      <div class="row">
+        <span class="row-tag">36 胶囊</span>
+        <div class="cell">
+          <div class="flat-pill">开始学习</div>
+          <span class="cell-label">rest</span><span class="cell-token">--ctl-fill</span>
+        </div>
+        <div class="cell">
+          <div class="flat-pill is-hover">开始学习</div>
+          <span class="cell-label">hover</span><span class="cell-token">-fill-hover</span>
+        </div>
+        <div class="cell">
+          <div class="flat-pill is-active">开始学习</div>
+          <span class="cell-label">active</span><span class="cell-token">-fill-active<br />scale(.96)</span>
+        </div>
+        <div class="cell">
+          <div class="flat-pill is-focus">开始学习</div>
+          <span class="cell-label">focus</span><span class="cell-token">材质不变<br />仅外圈</span>
+        </div>
+      </div>
+
+      <div class="row">
+        <span class="row-tag">32 玻璃圆钮</span>
+        <div class="behind">
+          <div class="cell">
+            <div class="glass-circle">‹</div>
+            <span class="cell-label">rest</span><span class="cell-token">--mat-control-fill</span>
+          </div>
+          <div class="cell">
+            <div class="glass-circle is-hover">‹</div>
+            <span class="cell-label">hover</span><span class="cell-token">-fill-hover</span>
+          </div>
+          <div class="cell">
+            <div class="glass-circle is-active">‹</div>
+            <span class="cell-label">active</span><span class="cell-token">-fill-active<br />scale(.9)</span>
+          </div>
+          <div class="cell">
+            <div class="glass-circle is-focus">‹</div>
+            <span class="cell-label">focus</span><span class="cell-token">材质不变<br />仅外圈</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="on-white" style="padding-bottom: 10px">
+      <div class="verdict">
+        <b>亮色</b>：平面控件 rest 是浅灰 12% → active 加深到 28%（在 #f2f2f7 上肉眼明显）·
+        tinted 是 accent 淡底 → hover 更实 → active 再实一档 ·
+        玻璃控件 rest 是白 80% → active 换中性灰 22%。
+        &nbsp;|&nbsp;
+        <b>夜黑</b>：暗底上"压暗"不可见，active 一律走**更亮更实**（fill 24% → 46%）。
+        &nbsp;|&nbsp;
+        两类都必须能看出 rest≠active，否则就是"点了没反应"。
+      </div>
+    </section>
+  </body>
+</html>

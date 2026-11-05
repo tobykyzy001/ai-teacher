@@ -1,0 +1,246 @@
+/* ===========================================================================
+   recipes.css —— 玻璃材质对照配方
+   ---------------------------------------------------------------------------
+   两条线，读取方式**故意不同**：
+
+   · old/*   从 `git show HEAD:src/style.css`（:root 玻璃令牌 + .glass +
+             .n-button--default-type + .btn-tinted + .btn-icon-circle）与
+             `git show HEAD:src/views/ReadingView.vue`（.side-arrow）
+             **逐字复制**，只把选择器换成 .old-xxx 并去掉 !important
+             （对照页里没有 naive 的内联 style 需要压）。
+
+             它必须**冻结**：这是"改造前"的参照物。令牌值直接写死在本文件里，
+             不跟随工作树 —— 因为 HEAD 的 --glass-* 令牌在工作树里已经被删掉了，
+             引用 var(--glass-bg) 只会解析成空值。
+
+   · new/*   不写死任何值，直接用**工作树当前**的 --mat-* 令牌。
+             令牌由 swatches.html / states.html 里
+             `<link rel="stylesheet" href="/src/style.css?direct">` 提供
+             （Vite 的 ?direct 返回未加工的 CSS 原文）。
+
+    ⚠ 为什么 new/* 不抄一份数值：第一版是抄的，Lead 随后把
+      --mat-control-fill 从 .52 改到 .80、--mat-edge 从白改暗，
+      对照页立刻说谎。现在改为"永远读真身"，代价是这两个静态页
+      必须经 Vite（本地服务）打开，不能双击 file:// 直接看。
+      这正是 capture.sh 的做法，所以不影响截图。
+
+   背景带（swatches.html）：#F2F2F7 近白 / 彩色高频渐变 / #1c1c1e 暗底。
+   =========================================================================== */
+
+/* ---------------------------------------------------------------------------
+   HEAD 的 :root 玻璃令牌（逐字，取自 git show HEAD:src/style.css）
+   ---------------------------------------------------------------------------
+   作用域挂在**每个 old/* 材质类自己身上**（而不是要求调用方再加 .old-scope）。
+
+   踩过的坑：一开始只声明在 .old-scope 上，swatches.html 里
+   `class="tile old-chrome-button"` 没带 .old-scope，于是 --glass-sheen / --glass-bg
+   全解析为空 → 四个 old 格子在白底和暗底上完全透明，看起来像
+   "HEAD 的玻璃根本不存在"，正好把结论看反。
+   --------------------------------------------------------------------------- */
+.old-chrome-button,
+.old-default-button,
+.old-tinted,
+.old-side-arrow {
+  /* 主题色（HEAD 亮色取值，冻结） */
+  --label: #000000;
+  --label-2: rgba(60, 60, 67, 0.6);
+  --accent: #1d1d1f;
+  --accent-fill: rgba(120, 120, 128, 0.16);
+  --radius-pill: 999px;
+  --space-4: 16px;
+  --dur-fast: 0.12s;
+  --spring: cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* 玻璃令牌（HEAD 亮色取值，冻结） */
+  --glass-bg: rgba(250, 250, 252, 0.62);
+  --glass-bg-hover: rgba(250, 250, 252, 0.78);
+  --glass-blur: blur(28px) saturate(200%) brightness(1.06);
+  --glass-highlight: inset 0 0.5px 0 rgba(255, 255, 255, 0.95);
+  --glass-sheen: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.38) 0%,
+    rgba(255, 255, 255, 0.08) 55%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  --glass-rim:
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.95),
+    inset 0 -0.5px 0 rgba(0, 0, 0, 0.04),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.55);
+  --glass-drop:
+    0 0.5px 1px rgba(0, 0, 0, 0.04),
+    0 2px 10px rgba(0, 0, 0, 0.08),
+    0 8px 24px rgba(0, 0, 0, 0.06);
+}
+
+/* HEAD 的 .glass（逐字） */
+.old-chrome-button {
+  background: var(--glass-sheen), var(--glass-bg);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: none;
+  box-shadow: var(--glass-rim), var(--glass-drop);
+}
+
+/* HEAD 的 .n-button--default-type:not(...)（逐字，去掉 !important）。
+   注意它还叠加了 .n-button 基础规则的 --glass-rim/--glass-drop 投影。 */
+.old-default-button {
+  background: var(--glass-sheen), var(--glass-bg);
+  -webkit-backdrop-filter: blur(18px) saturate(190%) brightness(1.04);
+  backdrop-filter: blur(18px) saturate(190%) brightness(1.04);
+  color: var(--label);
+  border: none;
+  border-radius: var(--radius-pill);
+  box-shadow: var(--glass-rim), var(--glass-drop);
+}
+
+/* HEAD 的 .btn-tinted.n-button:not(.n-button--disabled)（逐字） */
+.old-tinted {
+  background: var(--glass-sheen), var(--accent-fill);
+  color: var(--accent);
+  border: none;
+  border-radius: var(--radius-pill);
+  font-weight: 600;
+  -webkit-backdrop-filter: blur(18px) saturate(190%) brightness(1.04);
+  backdrop-filter: blur(18px) saturate(190%) brightness(1.04);
+  box-shadow:
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.85),
+    inset 0 0 0 0.5px rgba(120, 120, 128, 0.24),
+    0 1px 2px rgba(0, 0, 0, 0.06),
+    0 4px 12px rgba(0, 0, 0, 0.05);
+}
+
+/* HEAD 阅读页 .side-arrow（逐字；position:fixed / top:50% 等定位属性去掉，
+   只留材质与几何） */
+.old-side-arrow {
+  border-radius: 50%;
+  color: var(--label-2);
+  background: var(--glass-sheen), var(--glass-bg);
+  -webkit-backdrop-filter: blur(20px) saturate(170%);
+  backdrop-filter: blur(20px) saturate(170%);
+  border: none;
+  box-shadow:
+    var(--glass-rim),
+    0 1px 6px rgba(0, 0, 0, 0.1);
+  transition:
+    background var(--dur-fast) ease,
+    color var(--dur-fast) ease;
+}
+
+/* ===========================================================================
+   ctl/* —— 平面控件（页面按钮）的填充
+   ---------------------------------------------------------------------------
+   材质系统 v5 把控件分成两类，判据是"背后有没有内容在动"：
+
+   · **坐在静止底色上的页面按钮**（default / tinted / .btn-icon-circle）
+     → 不用玻璃，走 systemFill 一族的纯灰 --ctl-*。
+       理由：按钮背后既没有内容可透、也没有位移可糊，玻璃只会变成
+       "比底色略白的一块斑"，还平白多一个合成层。
+
+   · **浮在内容之上的小控件**（侧栏收放钮 .edge-fab、翻章箭头 .side-arrow、Aa 钮）
+     → .glass-control，走 --mat-* 玻璃。
+
+   本页把两类都列出来，因为它们极易被混淆：看到"按钮"就套玻璃是这一轮的原始错误。
+   =========================================================================== */
+
+/* 平面圆钮（.btn-icon-circle）：灰底 + 一道 hairline，无模糊无投影 */
+.ctl-circle {
+  background-color: var(--ctl-fill);
+  box-shadow: var(--ctl-edge);
+  border: none;
+}
+.ctl-circle-hover {
+  background-color: var(--ctl-fill-hover);
+  box-shadow: var(--ctl-edge);
+  border: none;
+}
+.ctl-circle-active {
+  background-color: var(--ctl-fill-active);
+  box-shadow: none;
+  border: none;
+}
+
+/* 平面胶囊（.n-button default）：同族灰，几何是胶囊 */
+.ctl-pill {
+  background-color: var(--ctl-fill);
+  box-shadow: var(--ctl-edge);
+  border: none;
+}
+.ctl-pill-hover {
+  background-color: var(--ctl-fill-hover);
+  box-shadow: var(--ctl-edge);
+  border: none;
+}
+.ctl-pill-active {
+  background-color: var(--ctl-fill-active);
+  box-shadow: none;
+  border: none;
+}
+
+/* ===========================================================================
+   new/* —— 材质系统 v5
+   ---------------------------------------------------------------------------
+   全部读工作树当前的 --mat-* 令牌（见文件头说明），不写死数值。
+   令牌缺失时（例如在 HEAD 代码树上打开本页）浏览器会让属性失效，
+   格子会退化成"只有文字、没有材质"——capture.sh 会自动跳过这种情形。
+   =========================================================================== */
+
+/* new/chrome：大面（导航条 / Tab 栏 / running head / 抽屉）。
+   背后是整屏滚动内容，模糊拉满。 */
+.new-chrome {
+  background-color: var(--mat-chrome-fill);
+  -webkit-backdrop-filter: var(--mat-chrome-blur);
+  backdrop-filter: var(--mat-chrome-blur);
+  border: none;
+  box-shadow:
+    var(--mat-specular),
+    var(--mat-shade),
+    var(--mat-edge);
+}
+
+/* new/control：小面**但浮在内容之上**（.edge-fab / .side-arrow / .aa-fab）。
+   ⚠ 不要拿它做普通页面按钮 —— 那些走上面的 ctl/*。 */
+.new-control {
+  background-color: var(--mat-control-fill);
+  -webkit-backdrop-filter: var(--mat-control-blur);
+  backdrop-filter: var(--mat-control-blur);
+  border: none;
+  box-shadow:
+    var(--mat-specular),
+    var(--mat-shade),
+    var(--mat-edge),
+    var(--mat-float-sm);
+}
+
+/* new/overlay：浮层（下拉 / 消息 / 弹窗 / 气泡）。必须压住任意内容，取高实度。 */
+.new-overlay {
+  background-color: var(--mat-overlay-fill);
+  -webkit-backdrop-filter: var(--mat-overlay-blur);
+  backdrop-filter: var(--mat-overlay-blur);
+  border: none;
+  box-shadow:
+    var(--mat-specular),
+    var(--mat-shade),
+    var(--mat-edge),
+    var(--mat-float-lg);
+}
+
+/* new/press：**按压后**的静态快照。
+   headless 截不到 :active，所以这里把 .mat-press:active 的声明整体搬过来：
+   底色换成 --mat-control-fill-active、投影收到 --mat-float-press、缩到 0.96。
+   判断标准：与 new/control 必须**一眼看得出不同**，否则就是用户说的"点了没反应"。 */
+.new-press {
+  background-color: var(--mat-control-fill-active);
+  -webkit-backdrop-filter: var(--mat-control-blur);
+  backdrop-filter: var(--mat-control-blur);
+  border: none;
+  box-shadow:
+    var(--mat-specular),
+    var(--mat-float-press);
+  /* ⚠ 这里**故意不写** transform: scale(0.96)。
+     真实按压时 scale 作用在**整个控件**（玻璃 + 文字 + 它覆盖的那块底），
+     而本页的 .mat 只是"盖在底上的一层"——在它上面 scale 会把玻璃缩进去，
+     四周露出一圈没被玻璃盖住的底，看起来像"按下时边缘漏底"，
+     那是探针页的假象，不是产品问题（第一版就踩了这个，量出 new/press
+     的细节保留率 159% > 裸底，明显异常才发现）。
+     缩放的视觉效果请在 states.html 里看：那里 scale 作用在整个控件上。 */
+}

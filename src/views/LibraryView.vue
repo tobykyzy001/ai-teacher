@@ -226,14 +226,24 @@ async function doRemove(): Promise<void> {
   aspect-ratio: 2 / 3;
   border-radius: var(--radius-card);
   overflow: hidden;
+  /* 书封是内容层：按 HIG 内容层不用玻璃，但书封本身是"摆件"，
+     给它一层接地投影才不像贴在页面上的色块。投影走浮层档，按下时收到贴桌。 */
   box-shadow:
     inset 0 0 0 0.5px rgba(255, 255, 255, 0.18),
-    0 6px 18px rgba(0, 0, 0, 0.14);
-  transition: transform var(--dur-fast) var(--spring);
+    var(--mat-float-md);
+  transition:
+    transform 80ms var(--spring),
+    box-shadow 80ms linear;
 }
 
 .book-tile:active .cover {
   transform: scale(0.97);
+  box-shadow:
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.18),
+    var(--mat-float-press);
+  transition:
+    transform 220ms var(--spring),
+    box-shadow 220ms var(--spring);
 }
 
 /* EPUB 真封面：等比铺满 2:3 书型，书脊暗纹 (::before) 保留在外层 */
@@ -284,6 +294,9 @@ async function doRemove(): Promise<void> {
   color: rgba(255, 255, 255, 0.72);
 }
 
+/* 删除钮压在彩色书封上（不是应用底色）：这里用深色遮罩是对的，
+   不能套 .glass-control —— 玻璃配方是按浅底调的，放在彩图上会糊成一块脏斑。
+   只补按压反馈：遮罩加深 + 轻微缩。 */
 .cover-close {
   position: absolute;
   top: 8px;
@@ -294,6 +307,21 @@ async function doRemove(): Promise<void> {
   border-radius: 50%;
   background: rgba(0, 0, 0, 0.24) !important;
   color: rgba(255, 255, 255, 0.94);
+  transition:
+    background-color 80ms linear,
+    transform 80ms var(--spring);
+}
+
+.cover-close:hover:not(:active) {
+  background: rgba(0, 0, 0, 0.4) !important;
+}
+
+.cover-close:active {
+  background: rgba(0, 0, 0, 0.55) !important;
+  transform: scale(0.88);
+  transition:
+    background-color 220ms var(--spring),
+    transform 220ms var(--spring);
 }
 
 .tile-progress {
