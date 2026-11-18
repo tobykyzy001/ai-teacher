@@ -8,8 +8,8 @@
 //!    具体字节数**不要写死在注释或界面里**——它取决于题库、作答记录、讲解长度与书的大小，
 //!    一律由运行时如实测量（`human_size` / `SyncResult.bytes`）。
 //! 2. **一致性快照**：用 `VACUUM INTO` 而不是直接拷文件——写事务中间拷会拿到半个库。
-//! 3. **schema 版本**：备份包里的 manifest 记 `schema_version`，恢复前比对。
-//!    本项目 schema 没有 ALTER 迁移，旧包灌进新版会 "no such column" 崩在启动。
+//! 3. **开发期结构校验**：备份包里的 `schema_version` 只保留历史元数据，不作版本比较；
+//!    恢复前核对规范化的完整 SCHEMA/索引，拒绝同名异义或缺失的不兼容旧结构。
 //! 4. **绝不打包 secret**：config.json 里有明文 api_key 与 WebDAV 密码，永不入包、永不上传。
 //! 5. **恢复走 backup API 热覆盖**，不换文件不重启：`Db` 的 Connection 是常驻的
 //!    （整个应用生命周期不断开），换文件会让旧连接指向被替换的 inode。
@@ -51,7 +51,11 @@ fn throttling_hint(status: u16) -> Option<&'static str> {
 /// 上层同步逻辑（打包、版本校验、脏标记）完全一样，所以抽这一层。
 /// 将来加 `S3Store`（Cloudflare R2 等）只需实现这三个方法。
 trait RemoteStore {
-    fn put(&self, key: &str, bytes: Vec<u8>) -> impl std::future::Future<Output = Result<(), String>>;
+    fn put(
+        &self,
+        key: &str,
+        bytes: Vec<u8>,
+    ) -> impl std::future::Future<Output = Result<(), String>>;
     fn get(&self, key: &str) -> impl std::future::Future<Output = Result<Vec<u8>, String>>;
     /// 只取前 `len` 字节（HTTP Range）。用于读 zip 头部的 manifest，
     /// 避免为了几百字节的清单把整个备份包拉下来。
@@ -188,7 +192,10 @@ impl RemoteStore for WebDavStore {
                 throttling_hint(s).unwrap_or("")
             ));
         }
-        let b = resp.bytes().await.map_err(|e| format!("读取内容失败：{e}"))?;
+        let b = resp
+            .bytes()
+            .await
+            .map_err(|e| format!("读取内容失败：{e}"))?;
         Ok(b.to_vec())
     }
 
@@ -203,7 +210,10 @@ impl RemoteStore for WebDavStore {
         // 只是白传了一遍）。两种都接受，内容交给 read_manifest 去解析。
         match resp.status().as_u16() {
             200 | 206 => {
-                let b = resp.bytes().await.map_err(|e| format!("读取内容失败：{e}"))?;
+                let b = resp
+                    .bytes()
+                    .await
+                    .map_err(|e| format!("读取内容失败：{e}"))?;
                 Ok(b.to_vec())
             }
             s => Err(format!("读取 {key} 头部失败（HTTP {s}）")),
@@ -220,7 +230,10 @@ impl RemoteStore for WebDavStore {
     async fn ensure_dir(&self) -> Result<(), String> {
         // 目录已存在时 MKCOL 返回 405，也算成功
         let resp = self
-            .req(reqwest::Method::from_bytes(b"MKCOL").unwrap(), &self.dir_url)
+            .req(
+                reqwest::Method::from_bytes(b"MKCOL").unwrap(),
+                &self.dir_url,
+            )
             .send()
             .await
             .map_err(|e| format!("创建远端目录失败：{e}"))?;
@@ -321,7 +334,7 @@ fn device_name() -> String {
 /// manifest 必须第一个写进包，方便"只读 manifest 不解全包"的快速预览。
 pub fn build_backup(db: &Db, app_data_dir: &Path, mode: PackMode) -> Result<Vec<u8>, String> {
     let stats = db.stats().map_err(|e| e.to_string())?;
-    let schema_version = db.schema_version().map_err(|e| e.to_string())?;
+    let schema_version = SCHEMA_VERSION;
 
     let manifest = BackupManifest {
         schema_version,
@@ -351,8 +364,8 @@ pub fn build_backup(db: &Db, app_data_dir: &Path, mode: PackMode) -> Result<Vec<
                 .compression_method(zip::CompressionMethod::Stored);
             zip.start_file(ENTRY_MANIFEST, manifest_opt)
                 .map_err(|e| format!("写入清单失败：{e}"))?;
-            let json = serde_json::to_vec_pretty(&manifest)
-                .map_err(|e| format!("序列化清单失败：{e}"))?;
+            let json =
+                serde_json::to_vec_pretty(&manifest).map_err(|e| format!("序列化清单失败：{e}"))?;
             zip.write_all(&json)
                 .map_err(|e| format!("写入清单失败：{e}"))?;
 
@@ -387,7 +400,8 @@ fn add_dir_to_zip(
     prefix: &str,
     opt: zip::write::SimpleFileOptions,
 ) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir).map_err(|e| format!("读取 {} 失败：{e}", dir.display()))?;
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("读取 {} 失败：{e}", dir.display()))?;
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
@@ -478,7 +492,6 @@ fn read_manifest_from_local_header(buf: &[u8]) -> Option<BackupManifest> {
     None
 }
 
-
 /// 校验并解包到临时目录，返回 (临时目录, manifest)。
 /// 调用方负责删临时目录。
 pub fn unpack_backup(bytes: &[u8]) -> Result<(PathBuf, BackupManifest), String> {
@@ -495,30 +508,23 @@ pub fn unpack_backup(bytes: &[u8]) -> Result<(PathBuf, BackupManifest), String> 
         serde_json::from_str(&buf).map_err(|e| format!("清单格式无效：{e}"))?
     };
 
-    // 版本闸门：旧包可以恢复到新版（向后兼容靠 CREATE TABLE IF NOT EXISTS 兜底），
-    // 但**新包绝不能**恢复到旧版应用——那会缺表缺列，启动即崩。
-    let current = SCHEMA_VERSION;
-    if manifest.schema_version > current {
-        return Err(format!(
-            "这份备份来自更新的应用版本（数据版本 {}，当前应用只支持到 {}）。\
-             请先把应用升级到最新版再恢复。",
-            manifest.schema_version, current
-        ));
+    // manifest 的版本只是旧元数据：开发期间没有版本化迁移，兼容性由下方实际 SCHEMA
+    // 校验判定（Db::restore_from_file 还会复核）。不能拿一个整回退的版本误拒同结构备份。
+    if manifest.schema_version < 0 {
+        return Err("备份清单包含无效的结构标识，已拒绝恢复".to_string());
     }
 
     let tmp = temp_dir_for("restore")?;
-    zip.extract(&tmp)
-        .map_err(|e| format!("解包失败：{e}"))?;
+    zip.extract(&tmp).map_err(|e| format!("解包失败：{e}"))?;
     Ok((tmp, manifest))
 }
-
 
 // ---------- 高层操作 ----------
 
 pub fn local_stats(db: &Db) -> Result<LocalStats, String> {
     Ok(LocalStats {
         stats: db.stats().map_err(|e| e.to_string())?,
-        schema_version: db.schema_version().map_err(|e| e.to_string())?,
+        schema_version: SCHEMA_VERSION,
         app_version: app_version(),
     })
 }
@@ -565,7 +571,10 @@ async fn upload(
         PackMode::DbOnly => "进度",
         PackMode::WithBooks => "完整数据（含书籍与插图）",
     };
-    Ok((format!("已备份{what}到 WebDAV（{}）", human_size(size)), size))
+    Ok((
+        format!("已备份{what}到 WebDAV（{}）", human_size(size)),
+        size,
+    ))
 }
 
 /// 列出远端快照（带 manifest 预览）。为了不下载整包，只对最新包做解析。
@@ -743,10 +752,7 @@ pub fn load_webdav_settings(app_data_dir: &Path) -> WebDavSettings {
     ConfigStore::<WebDavSettings>::new(webdav_config_path(app_data_dir)).load()
 }
 
-pub fn save_webdav_settings(
-    app_data_dir: &Path,
-    settings: &WebDavSettings,
-) -> Result<(), String> {
+pub fn save_webdav_settings(app_data_dir: &Path, settings: &WebDavSettings) -> Result<(), String> {
     ConfigStore::<WebDavSettings>::new(webdav_config_path(app_data_dir)).save(settings)
 }
 
@@ -818,7 +824,7 @@ mod tests {
     }
 
     #[test]
-    fn manifest_rejects_newer_schema() {
+    fn backup_acceptance_depends_on_schema_not_legacy_version() {
         let dir = temp_dir("newer");
         let (db, _) = setup_db(&dir);
         let bytes = build_backup(&db, &dir, PackMode::DbOnly).unwrap();
@@ -852,8 +858,12 @@ mod tests {
             }
             w.finish().unwrap();
         }
-        let err = unpack_backup(&cur.into_inner()).unwrap_err();
-        assert!(err.contains("更新的应用版本"), "实际错误：{err}");
+        let (_, manifest) = unpack_backup(&cur.into_inner()).expect("manifest 数值不得否决当前结构");
+        assert!(manifest.schema_version > SCHEMA_VERSION);
+        let other_dir = temp_dir("backup-metadata-target");
+        let (db2, _) = setup_db(&other_dir);
+        restore_from_bytes(&db2, &other_dir, &bytes, false).expect("当前结构应可恢复");
+        assert_eq!(db2.stats().unwrap().books, 1);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -883,7 +893,10 @@ mod tests {
         db.list_books().unwrap();
         db.get_unit(unit_id).unwrap();
         db.stats().unwrap();
-        assert!(!db.take_dirty(), "纯读不该置脏（list_books 的封面补建不算数据写）");
+        assert!(
+            !db.take_dirty(),
+            "纯读不该置脏（list_books 的封面补建不算数据写）"
+        );
 
         db.update_unit_progress(unit_id, "done", None).unwrap();
         assert!(db.take_dirty(), "写操作应置脏");
@@ -907,9 +920,17 @@ mod tests {
         assert!(manifest.includes_books);
 
         let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
-        let names: Vec<String> = (0..zip.len()).map(|i| zip.by_index(i).unwrap().name().to_string()).collect();
-        assert!(names.contains(&"books/1/unit_0.txt".to_string()), "实际条目：{names:?}");
-        assert!(names.contains(&"books/1/cover.jpg".to_string()), "实际条目：{names:?}");
+        let names: Vec<String> = (0..zip.len())
+            .map(|i| zip.by_index(i).unwrap().name().to_string())
+            .collect();
+        assert!(
+            names.contains(&"books/1/unit_0.txt".to_string()),
+            "实际条目：{names:?}"
+        );
+        assert!(
+            names.contains(&"books/1/cover.jpg".to_string()),
+            "实际条目：{names:?}"
+        );
         // 第一个必须是 manifest
         assert_eq!(names[0], ENTRY_MANIFEST);
         let _ = unit_id;
@@ -966,7 +987,10 @@ mod tests {
 
         let bytes = build_backup(&db, &dir, PackMode::WithBooks).unwrap();
         let haystack = String::from_utf8_lossy(&bytes);
-        assert!(!haystack.contains("sk-SECRET-123"), "备份包里出现了 api_key");
+        assert!(
+            !haystack.contains("sk-SECRET-123"),
+            "备份包里出现了 api_key"
+        );
         assert!(
             !haystack.contains("SECRET-APP-PASSWORD"),
             "备份包里出现了 WebDAV 密码"
@@ -1071,16 +1095,16 @@ mod tests {
     }
 
     #[test]
-    fn schema_version_is_persisted() {
+    fn schema_version_is_backup_metadata_not_database_state() {
         let dir = temp_dir("schemaver");
         let path = dir.join("ai_teacher.db");
-        {
-            let db = Db::open(&path).unwrap();
-            assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
-        }
-        // 重新打开仍是同一版本
-        let db = Db::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
+        let _db = Db::open(&path).unwrap();
+        assert_eq!(Db::backup_schema_version(), SCHEMA_VERSION);
+        let version: i64 = rusqlite::Connection::open(&path)
+            .unwrap()
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 0, "项目约定：开发期数据库不存迁移版本");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

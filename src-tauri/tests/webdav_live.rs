@@ -35,10 +35,8 @@ fn settings_from_env() -> Option<WebDavSettings> {
 fn temp_dir(tag: &str) -> PathBuf {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "ai-teacher-e2e-{}-{seq}-{tag}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("ai-teacher-e2e-{}-{seq}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -55,17 +53,42 @@ fn seed_db(dir: &std::path::Path) -> (ai_teacher_lib::Db, i64, i64) {
         let file = dir.join(format!("unit_{idx}.txt"));
         std::fs::write(&file, format!("第 {idx} 节正文内容")).unwrap();
         let uid = db
-            .insert_unit(book_id, idx, &format!("第 {idx} 节"), file.to_string_lossy().as_ref())
+            .insert_unit(
+                book_id,
+                idx,
+                &format!("第 {idx} 节"),
+                file.to_string_lossy().as_ref(),
+            )
             .unwrap();
         unit_ids.push(uid);
     }
     // 制造一些进度与复习项
-    db.update_unit_progress(unit_ids[0], "done", Some(0.9)).unwrap();
-    db.update_unit_progress(unit_ids[1], "reading", None).unwrap();
-    db.insert_review_item(unit_ids[0], "知识点A", None, 2.5, 1, 0, "2026-11-10", "study")
+    db.update_unit_progress(unit_ids[0], "done", Some(0.9))
         .unwrap();
-    db.insert_review_item(unit_ids[0], "知识点B", None, 2.5, 1, 0, "2026-11-10", "study")
+    db.update_unit_progress(unit_ids[1], "reading", None)
         .unwrap();
+    db.insert_review_item(
+        unit_ids[0],
+        "知识点A",
+        None,
+        2.5,
+        1,
+        0,
+        "2026-11-10",
+        "study",
+    )
+    .unwrap();
+    db.insert_review_item(
+        unit_ids[0],
+        "知识点B",
+        None,
+        2.5,
+        1,
+        0,
+        "2026-11-10",
+        "study",
+    )
+    .unwrap();
     (db, book_id, unit_ids[0])
 }
 
@@ -112,7 +135,11 @@ fn webdav_full_roundtrip() {
         let manifest = latest.manifest.as_ref().expect("manifest 应可解析");
         println!(
             "[4/5] 远端快照：{} 字节，schema v{}，来自 {}，{} 本 / {} 单元",
-            latest.size, manifest.schema_version, manifest.device, manifest.db_stats.books, manifest.db_stats.units
+            latest.size,
+            manifest.schema_version,
+            manifest.device,
+            manifest.db_stats.books,
+            manifest.db_stats.units
         );
         assert_eq!(manifest.db_stats.units, before.units);
         assert!(manifest.schema_version >= 1);

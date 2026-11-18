@@ -114,7 +114,11 @@ fn crc32_table() -> [u32; 256] {
     for (i, slot) in table.iter_mut().enumerate() {
         let mut c = i as u32;
         for _ in 0..8 {
-            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            c = if c & 1 != 0 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
         }
         *slot = c;
     }
@@ -252,7 +256,10 @@ mod tests {
     fn encodes_minimal_png() {
         let png = encode_png(&[1, 2, 3], 1, 1);
         assert_eq!(png.len(), 72);
-        assert_eq!(&png[0..8], &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A][..]);
+        assert_eq!(
+            &png[0..8],
+            &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A][..]
+        );
         assert_eq!(&png[8..12], &13u32.to_be_bytes()[..]);
         assert_eq!(&png[12..16], &b"IHDR"[..]);
         assert_eq!(&png[16..24], &[0, 0, 0, 1, 0, 0, 0, 1][..]);

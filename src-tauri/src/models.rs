@@ -67,6 +67,29 @@ pub struct LlmSettings {
     pub auto_start_reading: bool,
     /// 关闭模型思考模式提速：按 OpenAI 兼容协议注入 `reasoning_effort`（none/medium，见 llm::thinking_params）
     pub disable_thinking: bool,
+    /// 领读、答疑、知识点提取和摘要使用的模型；None 或空白时沿用主模型。
+    #[serde(default)]
+    pub reading_model: Option<String>,
+    /// 出题模型；None 或空白时沿用主模型。
+    #[serde(default)]
+    pub quiz_model: Option<String>,
+    /// 简答题判分模型；None 或空白时沿用主模型。
+    #[serde(default)]
+    pub grading_model: Option<String>,
+    /// 领读风格：default / exam / popular / socratic。
+    #[serde(default = "default_reading_style")]
+    pub reading_style: String,
+    /// 讲解深度：concise / standard / deep。
+    #[serde(default = "default_reading_depth")]
+    pub reading_depth: String,
+}
+
+fn default_reading_style() -> String {
+    "default".to_string()
+}
+
+fn default_reading_depth() -> String {
+    "standard".to_string()
 }
 
 impl Default for LlmSettings {
@@ -77,6 +100,11 @@ impl Default for LlmSettings {
             model: "deepseek-chat".to_string(),
             auto_start_reading: false,
             disable_thinking: true,
+            reading_model: None,
+            quiz_model: None,
+            grading_model: None,
+            reading_style: default_reading_style(),
+            reading_depth: default_reading_depth(),
         }
     }
 }
@@ -132,7 +160,7 @@ impl WebDavSettings {
 /// 备份包清单：恢复前用它校验版本与内容，避免旧快照灌进新版应用导致启动崩溃。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupManifest {
-    /// 数据 schema 版本（= 写出时的 PRAGMA user_version），恢复前必须 ≤ 当前应用支持的版本
+    /// 当前备份结构信息；开发模式并不表示固化后的数据库代数，恢复还需校验实际表列
     pub schema_version: i64,
     pub app_version: String,
     /// 生成时间，RFC3339（本地时区带偏移）
@@ -260,6 +288,31 @@ pub struct TodayPlan {
     pub reviewed_today: i64,
     pub due_total: i64,
     pub streak_days: i64,
+    pub goals: Vec<DailyGoal>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LearningGoal {
+    pub book_id: i64,
+    pub book_title: String,
+    pub weeks: i64,
+    pub remaining_units: i64,
+    /// 排序索引而非任务进度：计划只使用前面未完成的单元开始重排。
+    pub first_remaining_idx: Option<i64>,
+    pub started_at: String,
+    pub completed_today: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DailyGoal {
+    pub book_id: i64,
+    pub book_title: String,
+    pub weeks: i64,
+    pub days_left: i64,
+    pub remaining_units: i64,
+    pub daily_target: i64,
+    pub completed_today: i64,
+    pub today_units: Vec<Unit>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -272,6 +325,8 @@ pub struct ReviewTask {
 pub struct BookDetail {
     pub book: BookSummary,
     pub units: Vec<Unit>,
+    pub learning_goal: Option<LearningGoal>,
+    pub resplit_unit_ids: Vec<i64>,
     /// 按章分组的单元视图（与 units 同一数据源，分组规则见 ingest::group_units_into_chapters）
     pub chapters: Vec<ChapterGroup>,
 }
@@ -304,6 +359,45 @@ pub struct ChapterContent {
 pub struct ChapterSegment {
     pub unit: Unit,
     pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchHit {
+    pub unit_id: i64,
+    pub unit_title: String,
+    pub chapter_title: String,
+    pub quote: String,
+    pub context: String,
+    /// 原文 Unicode 偏移，图片与 Markdown 的差异化解析由前端定位。
+    pub start: usize,
+    pub end: usize,
+    /// true 表示命中小节标题；正文命中为 false，start/end 对应单元原文。
+    pub title_search: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResplitPreview {
+    pub chapter_title: String,
+    pub target_chars: usize,
+    pub unit_count: i64,
+    pub preserved_unit_ids: Vec<i64>,
+    pub replaced_unit_ids: Vec<i64>,
+    pub explanation_unit_ids: Vec<i64>,
+    pub preview: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResplitPart {
+    pub source_unit_id: Option<i64>,
+    pub title: String,
+    pub content: String,
+    pub protected: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResplitResult {
+    pub revision_id: i64,
+    pub units: Vec<Unit>,
 }
 
 /// 错题条目：绝不包含 answer / explanation 字段。

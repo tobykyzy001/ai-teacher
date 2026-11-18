@@ -90,6 +90,7 @@ mod tests {
                 model: "my-model".to_string(),
                 auto_start_reading: true,
                 disable_thinking: true,
+                ..LlmSettings::default()
             })
             .unwrap();
         let s = store.load();

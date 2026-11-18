@@ -174,6 +174,19 @@ const MAX_CHAPTER_LLM_CHARS: usize = 15000;
 /// 每个单元所属"大节"标题：优先按源文件目录层级重解析（不入库，EPUB 取 NCX/nav 顶层
 /// 条目）；源文件缺失、解析失败或单元数对不上时，回退按单元标题推导（去"（N）"后缀）。
 fn book_unit_group_titles(db: &Db, book_id: i64, rows: &[UnitRow]) -> Vec<String> {
+    // 手动切分后源文件默认切分数量不再对齐，现用本次保存的章归属。
+    if db.has_chapter_overrides(book_id).unwrap_or(false) {
+        let manual = db.chapter_titles(book_id).unwrap_or_default();
+        return rows
+            .iter()
+            .map(|row| {
+                manual
+                    .get(&row.id)
+                    .cloned()
+                    .unwrap_or_else(|| ingest::chapter_group_title(&row.title).to_string())
+            })
+            .collect();
+    }
     let fallback = || -> Vec<String> {
         rows.iter()
             .map(|r| ingest::chapter_group_title(&r.title).to_string())
@@ -200,7 +213,9 @@ fn measure_book_units(db: &Db, book_id: i64, rows: &[UnitRow]) -> Vec<(i64, i64,
     rows.iter()
         .zip(titles)
         .map(|(r, group_title)| {
-            let n = read_unit_content(db, r).map(|c| c.chars().count()).unwrap_or(0);
+            let n = read_unit_content(db, r)
+                .map(|c| c.chars().count())
+                .unwrap_or(0);
             (r.id, r.idx, group_title, n)
         })
         .collect()
@@ -322,6 +337,8 @@ async fn ensure_unit_registered(
     if unit.status == UnitStatus::Unread.as_str() {
         db.update_unit_progress(unit.id, UnitStatus::Reading.as_str(), unit.mastery)
             .map_err(|e| e.to_string())?;
+        db.record_unit_started(unit.id, unit.book_id, &scheduler::due_date(today(), 0))
+            .map_err(|e| e.to_string())?;
     }
     // 知识点与摘要都只基于净化后的正文：书自带的思考题与 `> 提示：`（答案键）
     // 曾把"考点"污染成三条要点的拼接句，也让摘要变成对习题的复述
@@ -409,7 +426,8 @@ pub async fn start_chapter_reading_impl(
     // 讲解本地持久化：重开页面直接展示，"重新领读"时覆盖
     let updated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let first_unit_id = scope.units[0].0.id;
-    if let Err(e) = db.upsert_chapter_explanation(first_unit_id, &explanation, &all_kps, &updated_at)
+    if let Err(e) =
+        db.upsert_chapter_explanation(first_unit_id, &explanation, &all_kps, &updated_at)
     {
         eprintln!("保存章节领读讲解失败：{e}");
     }
@@ -429,7 +447,14 @@ pub async fn ask_chapter_impl(
     let scope = resolve_chapter(db, unit_id)?;
     let chapter_text = ingest::cap_llm_input(&chapter_plain_text(&scope), MAX_CHAPTER_LLM_CHARS);
     let prev_ctx = prev_context(db, &scope.units[0].0);
-    llm::ask_stream(settings, &chapter_text, prev_ctx.as_deref(), question, on_delta).await
+    llm::ask_stream(
+        settings,
+        &chapter_text,
+        prev_ctx.as_deref(),
+        question,
+        on_delta,
+    )
+    .await
 }
 
 pub async fn ask_chapter_selection_impl(
@@ -479,7 +504,8 @@ pub async fn regenerate_quiz_impl(
         .map_err(|e| e.to_string())?
         .ok_or("未找到该单元")?;
     let at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    db.retire_questions(unit_id, &at).map_err(|e| e.to_string())?;
+    db.retire_questions(unit_id, &at)
+        .map_err(|e| e.to_string())?;
     if unit.status == UnitStatus::Done.as_str() || unit.status == UnitStatus::Skipped.as_str() {
         db.update_unit_progress(unit_id, UnitStatus::Reading.as_str(), None)
             .map_err(|e| e.to_string())?;
@@ -554,8 +580,20 @@ pub async fn submit_answer_impl(
             question.explanation.clone(),
         ),
         QType::Short => {
-            let (ok, comment) =
-                llm::grade_short(settings, &question.stem, &question.answer, given_answer).await?;
+            let unit = db
+                .get_unit(question.unit_id)
+                .map_err(|e| e.to_string())?
+                .ok_or("未找到题目所属单元")?;
+            // 判分同时看题目、示范回答和原文，避免把“不像参考答案”误当成“不理解”。
+            let content = read_unit_content_for_llm(db, &unit)?;
+            let (ok, comment) = llm::grade_short(
+                settings,
+                &content,
+                &question.stem,
+                &question.answer,
+                given_answer,
+            )
+            .await?;
             (ok, comment)
         }
     };
@@ -747,6 +785,8 @@ pub fn get_book_detail_impl(db: &Db, book_id: i64) -> Result<BookDetail, String>
         })
         .collect();
     Ok(BookDetail {
+        learning_goal: db.get_learning_goal(book_id).map_err(|e| e.to_string())?,
+        resplit_unit_ids: db.list_resplit_units(book_id).map_err(|e| e.to_string())?,
         book: BookSummary {
             id: book.id,
             title: book.title,
@@ -822,6 +862,7 @@ pub fn get_today_impl(db: &Db) -> Result<TodayPlan, String> {
         reviewed_today,
         due_total,
         streak_days: streak,
+        goals: crate::study::daily_goals(db)?,
     })
 }
 
@@ -945,7 +986,8 @@ pub fn list_books(state: State<'_, AppState>) -> Result<Vec<BookSummary>, String
     for b in &mut books {
         if let Ok(Some(src)) = state.db.book_source_path(b.id) {
             let src_path = resolve_data_path(&state.db, &src);
-            b.cover_path = ingest::ensure_book_cover(&state.app_data_dir, b.id, &src_path, &b.format);
+            b.cover_path =
+                ingest::ensure_book_cover(&state.app_data_dir, b.id, &src_path, &b.format);
         }
     }
     Ok(books)
@@ -961,12 +1003,8 @@ pub fn get_book_detail(state: State<'_, AppState>, book_id: i64) -> Result<BookD
     let mut detail = get_book_detail_impl(&state.db, book_id)?;
     if let Ok(Some(src)) = state.db.book_source_path(book_id) {
         let src_path = resolve_data_path(&state.db, &src);
-        detail.book.cover_path = ingest::ensure_book_cover(
-            &state.app_data_dir,
-            book_id,
-            &src_path,
-            &detail.book.format,
-        );
+        detail.book.cover_path =
+            ingest::ensure_book_cover(&state.app_data_dir, book_id, &src_path, &detail.book.format);
     }
     Ok(detail)
 }
@@ -987,6 +1025,107 @@ pub fn set_chapter_skipped(
     skipped: bool,
 ) -> Result<(), String> {
     set_chapter_skipped_impl(&state.db, unit_id, skipped)
+}
+
+#[tauri::command]
+pub fn search_book(
+    state: State<'_, AppState>,
+    book_id: i64,
+    query: String,
+) -> Result<Vec<SearchHit>, String> {
+    let rows = state
+        .db
+        .list_unit_rows(book_id)
+        .map_err(|e| e.to_string())?;
+    let titles = book_unit_group_titles(&state.db, book_id, &rows);
+    crate::study::search_book(&state.db, book_id, &query).map(|mut hits| {
+        for hit in &mut hits {
+            if let Some((index, _)) = rows
+                .iter()
+                .enumerate()
+                .find(|(_, row)| row.id == hit.unit_id)
+            {
+                if let Some(title) = titles.get(index) {
+                    hit.chapter_title = title.clone();
+                }
+            }
+        }
+        hits
+    })
+}
+
+#[tauri::command]
+pub fn set_learning_goal(
+    state: State<'_, AppState>,
+    book_id: i64,
+    weeks: i64,
+) -> Result<(), String> {
+    state
+        .db
+        .get_book(book_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("未找到这本书")?;
+    state
+        .db
+        .set_learning_goal(book_id, weeks, &chrono::Local::now().to_rfc3339())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_learning_goal(state: State<'_, AppState>, book_id: i64) -> Result<(), String> {
+    state
+        .db
+        .delete_learning_goal(book_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn preview_resplit(
+    state: State<'_, AppState>,
+    unit_id: i64,
+    target_chars: usize,
+) -> Result<ResplitPreview, String> {
+    let scope = resolve_chapter(&state.db, unit_id)?;
+    state
+        .db
+        .preview_resplit(unit_id, &scope.chapter_title, target_chars)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn resplit_unit(
+    state: State<'_, AppState>,
+    unit_id: i64,
+    target_chars: usize,
+) -> Result<Vec<Unit>, String> {
+    resplit_unit_impl(&state.db, unit_id, target_chars)
+}
+
+pub fn resplit_unit_impl(db: &Db, unit_id: i64, target_chars: usize) -> Result<Vec<Unit>, String> {
+    let scope = resolve_chapter(db, unit_id)?;
+    if !db
+        .has_chapter_overrides(scope.units[0].0.book_id)
+        .map_err(|e| e.to_string())?
+    {
+        let rows = db
+            .list_unit_rows(scope.units[0].0.book_id)
+            .map_err(|e| e.to_string())?;
+        let snapshot = book_unit_group_titles(db, scope.units[0].0.book_id, &rows)
+            .into_iter()
+            .enumerate()
+            .map(|(index, title)| (rows[index].id, title))
+            .collect();
+        db.save_chapter_snapshot(scope.units[0].0.book_id, &snapshot)
+            .map_err(|e| e.to_string())?;
+    }
+    let created_at = chrono::Local::now().to_rfc3339();
+    db.resplit_unit(unit_id, &scope.chapter_title, target_chars, &created_at)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn undo_resplit(state: State<'_, AppState>, unit_id: i64) -> Result<Vec<Unit>, String> {
+    state.db.undo_resplit(unit_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1179,9 +1318,14 @@ pub fn save_sync_settings(
 
 /// 试连接：建目录 + 写探测文件 + 读回。只做 PROPFIND 不够，很多服务器能读不能写。
 #[tauri::command]
-pub async fn test_sync_connection(settings: WebDavSettings) -> Result<ConnectionTestResult, String> {
+pub async fn test_sync_connection(
+    settings: WebDavSettings,
+) -> Result<ConnectionTestResult, String> {
     Ok(match crate::sync::test_connection(&settings).await {
-        Ok(msg) => ConnectionTestResult { ok: true, message: msg },
+        Ok(msg) => ConnectionTestResult {
+            ok: true,
+            message: msg,
+        },
         Err(e) => ConnectionTestResult {
             ok: false,
             message: e,
@@ -1314,13 +1458,135 @@ mod tests {
         list.iter().map(|s| s.to_string()).collect()
     }
 
+    #[test]
+    fn resplit_preserves_chapter_scope_and_search_offsets() {
+        let (db, dir, uid) = setup_unit("resplit-chapter-scope");
+        let detail = get_book_detail_impl(&db, db.get_unit(uid).unwrap().unwrap().book_id).unwrap();
+        let title = detail.chapters[0].title.clone();
+        let original_content = get_chapter_content_impl(&db, uid).unwrap().segments[0]
+            .content
+            .clone();
+        let updated = resplit_unit_impl(&db, uid, 1000).unwrap();
+        assert!(updated.len() > 1);
+        assert_eq!(updated[0].id, uid);
+        let content = get_chapter_content_impl(&db, updated.last().unwrap().id).unwrap();
+        assert_eq!(content.chapter_title, title);
+        assert_eq!(
+            content
+                .segments
+                .iter()
+                .map(|s| s.content.as_str())
+                .collect::<String>(),
+            original_content
+        );
+        let hits = crate::study::search_book(&db, detail.book.id, "记忆").unwrap();
+        assert!(!hits.is_empty());
+        let first_body_hit = hits.iter().find(|h| !h.title_search).unwrap();
+        let body = &content
+            .segments
+            .iter()
+            .find(|s| s.unit.id == first_body_hit.unit_id)
+            .unwrap()
+            .content
+            .chars()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            body[first_body_hit.start..first_body_hit.end]
+                .iter()
+                .collect::<String>(),
+            first_body_hit.quote
+        );
+        let restored = db.undo_resplit(uid).unwrap();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(
+            get_chapter_content_impl(&db, uid).unwrap().segments[0].content,
+            original_content
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn learning_goal_persists_into_today_plan() {
+        let (db, dir, uid) = setup_unit("goal-today");
+        let book = db.get_unit(uid).unwrap().unwrap().book_id;
+        db.set_learning_goal(book, 1, &chrono::Local::now().to_rfc3339())
+            .unwrap();
+        let today = get_today_impl(&db).unwrap();
+        assert_eq!(today.goals.len(), 1);
+        assert_eq!(today.goals[0].book_id, book);
+        assert_eq!(today.goals[0].today_units[0].id, uid);
+        db.record_unit_started(uid, book, &scheduler::due_date(super::today(), 0))
+            .unwrap();
+        let today = get_today_impl(&db).unwrap();
+        assert_eq!(today.goals[0].completed_today, 1);
+        assert_eq!(
+            today.goals[0].today_units.len(),
+            0,
+            "当日配额完成后不重复安排"
+        );
+        db.delete_learning_goal(book).unwrap();
+        assert!(get_today_impl(&db).unwrap().goals.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn goal_quota_skips_units_already_started_today() {
+        // start_reading 只把 unread 推成 reading，不会让小节变成 done；若今日配额只按
+        // status 过滤，已经开始阅读的那一节会既计入 completed_today 又再次出现在待读列表里。
+        let (db, dir, first) = setup_unit("goal-quota-repeat");
+        let book = db.get_unit(first).unwrap().unwrap().book_id;
+        for index in 1..14 {
+            let file = dir.join(format!("unit_{index}.txt"));
+            std::fs::write(&file, format!("第 {index} 节正文。")).unwrap();
+            db.insert_unit(
+                book,
+                index,
+                &format!("第 {} 节", index + 1),
+                file.to_str().unwrap(),
+            )
+            .unwrap();
+        }
+        db.set_learning_goal(book, 1, &chrono::Local::now().to_rfc3339())
+            .unwrap();
+
+        let today = scheduler::due_date(super::today(), 0);
+        let plan = get_today_impl(&db).unwrap();
+        let goal = &plan.goals[0];
+        assert!(
+            goal.daily_target >= 2,
+            "14 个小节 / 7 天每天应至少排 2 节，实际 {}",
+            goal.daily_target
+        );
+        assert_eq!(goal.today_units[0].id, first);
+
+        // 首次领读：把首个小节推到 reading 并登记今日完成。
+        db.update_unit_progress(first, "reading", None).unwrap();
+        db.record_unit_started(first, book, &today).unwrap();
+
+        let plan = get_today_impl(&db).unwrap();
+        let goal = &plan.goals[0];
+        assert_eq!(goal.completed_today, 1);
+        assert!(
+            !goal.today_units.iter().any(|unit| unit.id == first),
+            "今天已经开始阅读的小节不应再次出现在配额里，实际 {:?}",
+            goal.today_units.iter().map(|u| u.id).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            goal.today_units.len(),
+            usize::try_from(goal.daily_target - 1).unwrap(),
+            "排除已读小节后仍要补足剩余配额"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn quiz_content_excludes_book_exercises_and_answer_key() {
         std::env::set_var("AI_TEACHER_MOCK_LLM", "1");
         // 教辅型书的真实形态：正文里带着「思考题」和 `> 提示：`（逐题答案）。
         // 若把这段原样喂给出题，模型会直接抄题、并把答案键改写成语义单一的"参考答案"。
         let dir = temp_dir("quiz-strip-exercises");
-        let mut content = String::from("## 1.2 打架的三种方式\n\n正文讲三种冲突：批内拖慢、排队、并行度耦合。\n");
+        let mut content =
+            String::from("## 1.2 打架的三种方式\n\n正文讲三种冲突：批内拖慢、排队、并行度耦合。\n");
         content.push_str(&"补充正文，说明两阶段对 GPU 的口味不同。".repeat(70));
         content.push_str(
             "\n### 第 1 章思考题\n\
@@ -1343,10 +1609,19 @@ mod tests {
         let unit = db.get_unit(unit_id).unwrap().unwrap();
         let for_llm = read_unit_content_for_llm(&db, &unit).unwrap();
         // 净化后的正文里不能再出现书上的题目与答案键
-        assert!(!for_llm.contains("思考题"), "习题标题不该进 prompt：{for_llm}");
-        assert!(!for_llm.contains("你会优先保 TTFT"), "原题题干不该进 prompt");
+        assert!(
+            !for_llm.contains("思考题"),
+            "习题标题不该进 prompt：{for_llm}"
+        );
+        assert!(
+            !for_llm.contains("你会优先保 TTFT"),
+            "原题题干不该进 prompt"
+        );
         assert!(!for_llm.contains("提示："), "答案键不该进 prompt");
-        assert!(!for_llm.contains("保 ITL 烧 decode 大 batch"), "答案内容不该进 prompt");
+        assert!(
+            !for_llm.contains("保 ITL 烧 decode 大 batch"),
+            "答案内容不该进 prompt"
+        );
         // 知识正文必须保留
         assert!(for_llm.contains("批内拖慢"));
         assert!(for_llm.contains("## 1.3 chunked prefill"));
@@ -1501,7 +1776,9 @@ mod tests {
             } else {
                 "这是一段足够长的简答回答".to_string()
             };
-            submit_answer_impl(&db, &settings, q.id, &ans).await.unwrap();
+            submit_answer_impl(&db, &settings, q.id, &ans)
+                .await
+                .unwrap();
         }
         let u = db.get_unit(unit_id).unwrap().unwrap();
         assert_eq!(u.status, "done");
@@ -1578,7 +1855,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!r4.correct);
-        assert_eq!(r4.explanation, "mock 点评");
+        assert_eq!(r4.explanation, "mock 点评：说说你依据的关键条件和推理。");
 
         // 还有 1 题未答，单元未完成（做题本身不改变 unread 状态）
         let unit = db.get_unit(unit_id).unwrap().unwrap();
@@ -1622,18 +1899,21 @@ mod tests {
             .insert_book("测试书", "/tmp/测试书.md", "md", "2026-10-06")
             .unwrap();
         // (字数, 期望总题数, 期望单选数)：680 字 → 3 题；2550 字 → 5 题；4420 字 → 8 题（封顶）
-        for (i, (chars, want_total, want_mcq)) in
-            [(680, 3, 2), (2550, 5, 3), (4420, 8, 5)].into_iter().enumerate()
+        for (i, (chars, want_total, want_mcq)) in [(680, 3, 2), (2550, 5, 3), (4420, 8, 5)]
+            .into_iter()
+            .enumerate()
         {
             let file = dir.join(format!("unit_{i}.txt"));
             std::fs::write(&file, "学".repeat(chars)).unwrap();
             let unit_id = db
                 .insert_unit(book_id, i as i64, "第一章", file.to_string_lossy().as_ref())
                 .unwrap();
-            let questions = generate_quiz_impl(&db, &settings, unit_id)
-                .await
-                .unwrap();
-            assert_eq!(questions.len(), want_total, "{chars} 字单元应出 {want_total} 题");
+            let questions = generate_quiz_impl(&db, &settings, unit_id).await.unwrap();
+            assert_eq!(
+                questions.len(),
+                want_total,
+                "{chars} 字单元应出 {want_total} 题"
+            );
             assert_eq!(
                 questions.iter().filter(|q| q.qtype == QType::Mcq).count(),
                 want_mcq
@@ -2021,6 +2301,7 @@ mod tests {
                 model: "gpt".to_string(),
                 auto_start_reading: false,
                 disable_thinking: false,
+                ..LlmSettings::default()
             },
         )
         .unwrap();
@@ -2352,9 +2633,15 @@ mod tests {
         let settings = LlmSettings::default();
 
         let mut deltas: Vec<String> = Vec::new();
-        let out = ask_chapter_impl(&db, &settings, ids[0], "这章讲了什么？", &mut |d: &str| {
-            deltas.push(d.to_string());
-        })
+        let out = ask_chapter_impl(
+            &db,
+            &settings,
+            ids[0],
+            "这章讲了什么？",
+            &mut |d: &str| {
+                deltas.push(d.to_string());
+            },
+        )
         .await
         .unwrap();
         assert_eq!(out, "mock 回答：这章讲了什么？");
@@ -2372,9 +2659,11 @@ mod tests {
         .unwrap();
         assert_eq!(out, "mock 选段回答：什么意思？");
 
-        assert!(ask_chapter_impl(&db, &settings, 9999, "问", &mut |_: &str| {})
-            .await
-            .is_err());
+        assert!(
+            ask_chapter_impl(&db, &settings, 9999, "问", &mut |_: &str| {})
+                .await
+                .is_err()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

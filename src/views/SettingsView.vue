@@ -36,6 +36,49 @@
           <n-form-item label="模型名称">
             <n-input v-model:value="form.model" placeholder="例如 gpt-4o-mini" :disabled="loading" />
           </n-form-item>
+          <n-form-item label="语气">
+            <n-select
+              v-model:value="form.reading_style"
+              :options="READING_STYLE_OPTIONS"
+              :disabled="loading"
+            />
+          </n-form-item>
+          <n-form-item label="讲解深度">
+            <n-select
+              v-model:value="form.reading_depth"
+              :options="READING_DEPTH_OPTIONS"
+              :disabled="loading"
+            />
+          </n-form-item>
+          <div class="advanced-models">
+            <n-button text :disabled="loading" @click="advancedModelsOpen = !advancedModelsOpen">
+              {{ advancedModelsOpen ? "收起高级模型设置" : "按用途设置模型（高级）" }}
+            </n-button>
+            <div v-show="advancedModelsOpen" class="advanced-models-fields">
+              <div class="muted small advanced-models-hint">留空则使用主模型，无需重复填写。</div>
+              <n-form-item label="领读与答疑模型（选填）">
+                <n-input
+                  v-model:value="form.reading_model"
+                  placeholder="跟默认模型"
+                  :disabled="loading"
+                />
+              </n-form-item>
+              <n-form-item label="出题模型（选填）">
+                <n-input
+                  v-model:value="form.quiz_model"
+                  placeholder="跟默认模型"
+                  :disabled="loading"
+                />
+              </n-form-item>
+              <n-form-item label="判分模型（选填）">
+                <n-input
+                  v-model:value="form.grading_model"
+                  placeholder="跟默认模型"
+                  :disabled="loading"
+                />
+              </n-form-item>
+            </div>
+          </div>
         </n-form>
         <n-space>
           <n-button type="primary" :loading="saving" :disabled="loading" @click="onSave">保存</n-button>
@@ -80,6 +123,9 @@
     </n-card>
 
     <n-card title="阅读行为" class="about-card">
+      <n-alert type="info" class="tip" :bordered="false">
+        离线已有讲解不变；模型与领读偏好修改后对重新领读和后续答疑生效，不会因修改自动重新计费。
+      </n-alert>
       <div class="switch-row">
         <n-switch v-model:value="form.auto_start_reading" :disabled="loading" />
         <div>
@@ -231,6 +277,7 @@ import {
   NForm,
   NFormItem,
   NInput,
+  NSelect,
   NSpace,
   NSpin,
   NSwitch,
@@ -258,12 +305,30 @@ const currentThemeLabel = computed(
   () => THEME_OPTIONS.find((t) => t.key === themeStore.key)?.label ?? "纸白",
 );
 
+const READING_STYLE_OPTIONS = [
+  { label: "标准", value: "default" },
+  { label: "应试型", value: "exam" },
+  { label: "科普型", value: "popular" },
+  { label: "苏格拉底反问式", value: "socratic" },
+];
+const READING_DEPTH_OPTIONS = [
+  { label: "简明", value: "concise" },
+  { label: "标准", value: "standard" },
+  { label: "深入", value: "deep" },
+];
+const advancedModelsOpen = ref(false);
+
 const form = reactive<LlmSettings>({
   base_url: "",
   api_key: "",
   model: "",
   auto_start_reading: false,
   disable_thinking: true,
+  reading_model: null,
+  quiz_model: null,
+  grading_model: null,
+  reading_style: "default",
+  reading_depth: "standard",
 });
 // UI 上的「思考模式」开关：开 = 明确要求思考，关 = 明确关闭（存的是 disable_thinking）
 const thinkingEnabled = computed({
@@ -283,7 +348,14 @@ async function loadSettings(): Promise<void> {
   loading.value = true;
   loadError.value = null;
   try {
-    Object.assign(form, await api.getSettings());
+    const settings = await api.getSettings();
+    Object.assign(form, settings, {
+      reading_model: settings.reading_model ?? null,
+      quiz_model: settings.quiz_model ?? null,
+      grading_model: settings.grading_model ?? null,
+      reading_style: settings.reading_style ?? "default",
+      reading_depth: settings.reading_depth ?? "standard",
+    });
   } catch (e) {
     loadError.value = errText(e);
     message.error(`加载设置失败：${loadError.value}`);

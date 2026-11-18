@@ -120,15 +120,17 @@
           v-model:value="practiceAnswer"
           type="textarea"
           :rows="3"
-          placeholder="请输入你的答案…"
+          placeholder="用自己的话说说，一两句也可以…"
           :disabled="grading"
         />
 
         <n-alert
           v-if="practiceResult"
           class="q-result"
-          :type="practiceResult.correct ? 'success' : 'error'"
-          :title="practiceResult.correct ? '回答正确' : '回答错误'"
+          :type="practiceResult.correct ? 'success' : (practiceQ.qtype === 'short' ? 'warning' : 'error')"
+          :title="practiceQ.qtype === 'short'
+            ? (practiceResult.correct ? '理解到位' : '再补充一点')
+            : (practiceResult.correct ? '回答正确' : '回答错误')"
         >
           <div v-if="practiceResult.reference_answer" class="q-line">
             <b>参考答案：</b>{{ practiceResult.reference_answer }}

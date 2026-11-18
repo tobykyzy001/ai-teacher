@@ -31,6 +31,34 @@ impl ChatMessage {
     }
 }
 
+/// 业务用途与模型偏好的对应关系；连接地址和凭据仍统一使用主设置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlmUse {
+    Explain,
+    KnowledgePoints,
+    Quiz,
+    Grading,
+    Ask,
+    Summarize,
+    Ping,
+}
+
+/// 用途专用模型未设置、为 None 或仅为空白时回退主模型。
+pub fn resolved_model<'a>(settings: &'a LlmSettings, usage: LlmUse) -> &'a str {
+    let preferred = match usage {
+        LlmUse::Explain | LlmUse::KnowledgePoints | LlmUse::Ask | LlmUse::Summarize => {
+            settings.reading_model.as_deref()
+        }
+        LlmUse::Quiz => settings.quiz_model.as_deref(),
+        LlmUse::Grading => settings.grading_model.as_deref(),
+        LlmUse::Ping => None,
+    };
+    preferred
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .unwrap_or(settings.model.as_str())
+}
+
 /// 环境变量 AI_TEACHER_MOCK_LLM=1 时跳过 HTTP，返回确定性假响应（调用时检查）。
 pub fn is_mock_enabled() -> bool {
     std::env::var("AI_TEACHER_MOCK_LLM")
@@ -122,7 +150,10 @@ fn thinking_notice_state() -> &'static Mutex<ThinkingNoticeState> {
 
 /// 取走一条待展示的提示（供前端在 AI 动作结束后询问）。
 pub fn take_thinking_notice() -> Option<String> {
-    thinking_notice_state().lock().ok().and_then(|mut s| s.take())
+    thinking_notice_state()
+        .lock()
+        .ok()
+        .and_then(|mut s| s.take())
 }
 
 fn remember_thinking_rejected(base_url: &str, model: &str, disable_thinking: bool) {
@@ -301,6 +332,17 @@ pub async fn chat_stream(
     messages: Vec<ChatMessage>,
     on_delta: &mut (dyn FnMut(&str) + Send),
 ) -> Result<String, String> {
+    chat_stream_for(settings, LlmUse::Ping, messages, on_delta).await
+}
+
+/// 流式请求内部入口：只按用途改变模型，不复制 endpoint、凭据或思考设置。
+async fn chat_stream_for(
+    settings: &LlmSettings,
+    usage: LlmUse,
+    messages: Vec<ChatMessage>,
+    on_delta: &mut (dyn FnMut(&str) + Send),
+) -> Result<String, String> {
+    let model = resolved_model(settings, usage);
     if settings.api_key.trim().is_empty() {
         return Err("请先在设置中配置 API Key".to_string());
     }
@@ -310,7 +352,7 @@ pub async fn chat_stream(
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败：{e}"))?;
     let base_body = serde_json::json!({
-        "model": settings.model,
+        "model": model,
         "messages": messages,
         "stream": true,
     });
@@ -359,18 +401,10 @@ pub async fn chat_stream(
         break resp;
     };
     if dropped_params {
-        remember_thinking_rejected(
-            &settings.base_url,
-            &settings.model,
-            settings.disable_thinking,
-        );
+        remember_thinking_rejected(&settings.base_url, model, settings.disable_thinking);
     }
 
-    let cache_key = inline_cache_key(
-        &settings.base_url,
-        &settings.model,
-        settings.disable_thinking,
-    );
+    let cache_key = inline_cache_key(&settings.base_url, model, settings.disable_thinking);
     let mut filter = AnswerFilter::new(known_inline_thinking(&cache_key));
     let mut stream = resp.bytes_stream();
     // 只按完整行解码，原始字节先入缓冲，避免切在多字节字符中间
@@ -522,6 +556,139 @@ fn prev_context_section(prev_context: Option<&str>) -> String {
         .unwrap_or_default()
 }
 
+// 每次请求重新构造对应的中文段落，不复用上一轮的消息或可变缓冲区。
+const READING_STYLE_PROMPTS: [(&str, &str); 4] = [
+    (
+        "default",
+        "采用自然、耐心的领读风格，讲解清晰并帮助理解内容之间的联系。",
+    ),
+    (
+        "exam",
+        "采用应试导向的领读风格，聚焦考点、易错点和可检验的知识结论，必要时指出答题依据。",
+    ),
+    (
+        "popular",
+        "采用科普式的领读风格，用生活化类比和具体例子解释概念，减少不必要的术语。",
+    ),
+    (
+        "socratic",
+        "采用苏格拉底式领读，在讲解中穿插有针对性的引导问题，先启发学生思考，再给出明确答案。",
+    ),
+];
+const READING_DEPTH_PROMPTS: [(&str, &str); 3] = [
+    (
+        "concise",
+        "讲解简明扼要，只保留主线、核心概念和必要说明，避免铺陈。",
+    ),
+    (
+        "standard",
+        "讲解详略适中，说明核心概念、原因与主要内容之间的联系。",
+    ),
+    (
+        "deep",
+        "讲解深入充分，分析原理、推理过程、例子及必要的相关知识，同时保持条理清晰。",
+    ),
+];
+
+fn reading_preference_prompt<'a>(prompts: &'a [(&str, &str)], preference: &str) -> &'a str {
+    prompts
+        .iter()
+        .find_map(|(key, prompt)| (*key == preference.trim()).then_some(*prompt))
+        .unwrap_or(prompts[0].1)
+}
+
+fn append_reading_preferences(prompt: &mut String, settings: &LlmSettings) {
+    prompt.push_str("\n\n【本次领读风格】\n");
+    prompt.push_str(reading_preference_prompt(
+        &READING_STYLE_PROMPTS,
+        &settings.reading_style,
+    ));
+    prompt.push_str("\n\n【本次讲解深度】\n");
+    prompt.push_str(reading_preference_prompt(
+        &READING_DEPTH_PROMPTS,
+        &settings.reading_depth,
+    ));
+    prompt.push_str("\n这些领读偏好只影响本次表达，不改变知识事实或忽略指定的小节结构。");
+}
+
+fn explain_messages(
+    settings: &LlmSettings,
+    unit_text: &str,
+    prev_context: Option<&str>,
+) -> Vec<ChatMessage> {
+    let mut prompt = format!(
+        "{prev}请阅读下面的学习内容，写一篇 Markdown 格式的讲解，必须包含以下三个小节：\n\
+         「## 背景引入」：用一两段话介绍这章内容在讲什么、为什么值得学；\n\
+         「## 重点梳理」：用无序列表列出 3-6 个核心要点；\n\
+         「## 难点解释」：挑出 1-3 个最难理解的概念，用通俗的方式解释。\n\n\
+         学习内容：\n{unit_text}",
+        prev = prev_context_section(prev_context)
+    );
+    append_reading_preferences(&mut prompt, settings);
+    vec![
+        ChatMessage::system("你是一位耐心、风趣的中文学习助教，擅长把材料讲得通俗易懂。"),
+        ChatMessage::user(&prompt),
+    ]
+}
+
+fn explain_chapter_messages(
+    settings: &LlmSettings,
+    chapter_title: &str,
+    chapter_text: &str,
+    prev_context: Option<&str>,
+) -> Vec<ChatMessage> {
+    let mut prompt = format!(
+        "{prev}下面是一整章（《{title}》）的完整内容，请通读全章后写一篇 Markdown 格式的讲解，必须包含以下四个小节：\n\
+         「## 背景引入」：用一两段话介绍这章在讲什么、为什么值得学；\n\
+         「## 本章脉络」：梳理全章的内容结构，各部分如何衔接递进；\n\
+         「## 重点梳理」：用无序列表列出 3-6 个核心要点；\n\
+         「## 难点解释」：挑出 1-3 个最难理解的概念，用通俗的方式解释。\n\n\
+         章节内容：\n{chapter_text}",
+        prev = prev_context_section(prev_context),
+        title = chapter_title
+    );
+    append_reading_preferences(&mut prompt, settings);
+    vec![
+        ChatMessage::system("你是一位耐心、风趣的中文学习助教，擅长把材料讲得通俗易懂。"),
+        ChatMessage::user(&prompt),
+    ]
+}
+
+fn ask_messages(
+    settings: &LlmSettings,
+    unit_text: &str,
+    prev_context: Option<&str>,
+    question: &str,
+) -> Vec<ChatMessage> {
+    let mut prompt = format!(
+        "{prev}学习内容：\n{unit_text}\n\n学生的问题：{question}\n\n请基于学习内容回答问题，用中文。",
+        prev = prev_context_section(prev_context)
+    );
+    append_reading_preferences(&mut prompt, settings);
+    vec![
+        ChatMessage::system("你是一位耐心的中文学习助教，回答要准确、简洁。"),
+        ChatMessage::user(&prompt),
+    ]
+}
+
+fn ask_selection_messages(
+    settings: &LlmSettings,
+    unit_text: &str,
+    prev_context: Option<&str>,
+    quote: &str,
+    question: &str,
+) -> Vec<ChatMessage> {
+    let mut prompt = format!(
+        "{prev}学习内容：\n{unit_text}\n\n【用户选中的原文】\n{quote}\n\n学生的问题：{question}\n\n请基于学习内容和选中的原文回答问题，用中文。",
+        prev = prev_context_section(prev_context)
+    );
+    append_reading_preferences(&mut prompt, settings);
+    vec![
+        ChatMessage::system("你是一位耐心的中文学习助教，回答要准确、简洁。"),
+        ChatMessage::user(&prompt),
+    ]
+}
+
 pub async fn explain_stream(
     settings: &LlmSettings,
     unit_text: &str,
@@ -531,19 +698,10 @@ pub async fn explain_stream(
     if is_mock_enabled() {
         return Ok(stream_mock_text(MOCK_EXPLAIN, 5, on_delta));
     }
-    chat_stream(
+    chat_stream_for(
         settings,
-        vec![
-            ChatMessage::system("你是一位耐心、风趣的中文学习助教，擅长把材料讲得通俗易懂。"),
-            ChatMessage::user(&format!(
-                "{prev}请阅读下面的学习内容，写一篇 Markdown 格式的讲解，必须包含以下三个小节：\n\
-                 「## 背景引入」：用一两段话介绍这章内容在讲什么、为什么值得学；\n\
-                 「## 重点梳理」：用无序列表列出 3-6 个核心要点；\n\
-                 「## 难点解释」：挑出 1-3 个最难理解的概念，用通俗的方式解释。\n\n\
-                 学习内容：\n{unit_text}",
-                prev = prev_context_section(prev_context)
-            )),
-        ],
+        LlmUse::Explain,
+        explain_messages(settings, unit_text, prev_context),
         on_delta,
     )
     .await
@@ -563,21 +721,10 @@ pub async fn explain_chapter_stream(
     if is_mock_enabled() {
         return Ok(stream_mock_text(MOCK_CHAPTER_EXPLAIN, 5, on_delta));
     }
-    chat_stream(
+    chat_stream_for(
         settings,
-        vec![
-            ChatMessage::system("你是一位耐心、风趣的中文学习助教，擅长把材料讲得通俗易懂。"),
-            ChatMessage::user(&format!(
-                "{prev}下面是一整章（《{title}》）的完整内容，请通读全章后写一篇 Markdown 格式的讲解，必须包含以下四个小节：\n\
-                 「## 背景引入」：用一两段话介绍这章在讲什么、为什么值得学；\n\
-                 「## 本章脉络」：梳理全章的内容结构，各部分如何衔接递进；\n\
-                 「## 重点梳理」：用无序列表列出 3-6 个核心要点；\n\
-                 「## 难点解释」：挑出 1-3 个最难理解的概念，用通俗的方式解释。\n\n\
-                 章节内容：\n{chapter_text}",
-                prev = prev_context_section(prev_context),
-                title = chapter_title
-            )),
-        ],
+        LlmUse::Explain,
+        explain_chapter_messages(settings, chapter_title, chapter_text, prev_context),
         on_delta,
     )
     .await
@@ -593,7 +740,7 @@ pub async fn knowledge_points(
         chat(
             &settings.base_url,
             &settings.api_key,
-            &settings.model,
+            resolved_model(settings, LlmUse::KnowledgePoints),
             vec![
                 ChatMessage::system("你是一位严谨的中文学习助教，只输出 JSON。"),
                 ChatMessage::user(&format!(
@@ -647,49 +794,68 @@ pub fn plan_quiz(chars: usize) -> (usize, usize) {
     (mcq, total - mcq)
 }
 
+/// 问答题考的是把知识用在一个具体对象上，而不是把知识点换一种句式复述。
+/// 单独构造消息以便回归测试真实提示词，而不依赖线上模型碰巧生成好题。
+fn quiz_messages(
+    unit_text: &str,
+    knowledge_points: &[String],
+    mcq_n: usize,
+    short_n: usize,
+) -> Vec<ChatMessage> {
+    let total = mcq_n + short_n;
+    let kps = if knowledge_points.is_empty() {
+        "（未提供）".to_string()
+    } else {
+        knowledge_points.join("、")
+    };
+    vec![
+        ChatMessage::system("你是一位善于用问题启发思考的中文学习伙伴，只输出 JSON。"),
+        ChatMessage::user(&format!(
+            "请基于下面的学习内容和知识点，出一套共 {total} 道题的中文测验：{mcq_n} 道单选题和 {short_n} 道简答题（问答题）。\
+             严格只输出一个 JSON 数组，共 {total} 个对象，每个对象的字段为：\n\
+             qtype：\"mcq\"（单选）或 \"short\"（问答）；\n\
+             stem：题干；\n\
+             options：单选题为恰好 4 个选项（形如 \"A. xxx\"），问答题为空数组；\n\
+             answer：单选题为正确选项字母（如 \"A\"），问答题为一个自然、完整的示范回答；\n\
+             explanation：答案解析；\n\
+             knowledge_point：题目考查的知识点（一个 10 到 20 字的短语，不要拼接多个要点）。\n\
+             不要输出任何其他文字。\n\n\
+             出题要求（务必遵守）：\n\
+             1. 每道题只考查一个理解点，题干只能有一个明确的作答目标，不要把多个小问缝成一道。\n\
+             2. 问答题要把知识放进一个与材料相符的具体情境或对象中，优先考查：解释一个现象为什么发生、\
+             条件改变后会怎样、如何区分两个易混淆的概念，或根据给定证据作出判断。让学习者用日常语言说出\
+             自己的理解即可，通常一两句话就能回答。若材料不适合虚构情境，就改用具体的反例或推导，\
+             不要硬编与材料无关的专业背景。\n\
+             3. 禁止把问答题写成背诵或写作任务：不要出\"请定义／简述／概括／总结／列举／列出…要点\"，\
+             不要问\"有什么意义／作用／包含哪些方面\"，不要要求分点作答、使用固定术语或写一篇完整论述。\
+             也不要出\"你觉得\"\"请谈谈你的看法\"这类没有明确判断依据的开放讨论题。\n\
+             4. 问答题的 answer 用不超过 3 句自然的话给出关键结论和必要推理，可以包含合理的替代表述，\
+             不能写成\"①…②…③…\"的背诵提纲。它只用于帮助理解，不要求学习者逐字或逐点覆盖。\n\
+             5. 题目要能被单独判分：不依赖\"上面三种\"\"本节提到的\"这类上下文指代，题干自身说清对象、\
+             条件和判断依据。涉及取舍时必须给出具体条件，不能靠应试套路猜出题人的心思。\n\n\
+             问答题示例（仅为形式示例，不要沿用其中知识点）：小王以为调大缓存一定能减少重复计算，\
+             但观察发现重复计算没有变化。结合缓存只保存相同输入结果的机制，他可能漏掉了什么条件？\n\
+             示例答题：两次计算的输入可能并不相同；缓存只在输入相同时复用旧结果，单把缓存调大也无法命中。\n\n\
+             知识点：{kps}\n\n\
+             学习内容：\n{unit_text}"
+        )),
+    ]
+}
+
 pub async fn make_quiz(
     settings: &LlmSettings,
     unit_text: &str,
     knowledge_points: &[String],
 ) -> Result<Vec<RawQuizQuestion>, String> {
     let (mcq_n, short_n) = plan_quiz(unit_text.chars().count());
-    let total = mcq_n + short_n;
     let raw = if is_mock_enabled() {
         mock_quiz_json(knowledge_points, mcq_n, short_n)
     } else {
-        let kps = if knowledge_points.is_empty() {
-            "（未提供）".to_string()
-        } else {
-            knowledge_points.join("、")
-        };
         chat(
             &settings.base_url,
             &settings.api_key,
-            &settings.model,
-            vec![
-                ChatMessage::system("你是一位严谨的中文出题老师，只输出 JSON。"),
-                ChatMessage::user(&format!(
-                    "请基于下面的学习内容和知识点，出一套共 {total} 道题的中文测验：{mcq_n} 道单选题和 {short_n} 道简答题。\
-                     严格只输出一个 JSON 数组，共 {total} 个对象，每个对象的字段为：\n\
-                     qtype：\"mcq\"（单选）或 \"short\"（简答）；\n\
-                     stem：题干；\n\
-                     options：单选题为恰好 4 个选项（形如 \"A. xxx\"），简答题为空数组；\n\
-                     answer：单选题为正确选项字母（如 \"A\"），简答题为参考答案；\n\
-                     explanation：答案解析；\n\
-                     knowledge_point：题目考查的知识点（一个 10 到 20 字的短语，不要拼接多个要点）。\n\
-                     不要输出任何其他文字。\n\n\
-                     出题要求（务必遵守）：\n\
-                     1. 每道题只考查一个判断点。若某个知识点包含多个小问或需要多步取舍，拆成多道题，\
-                     绝不要把几个小问合并成一道——题干里只能有问号或只能有一个明确的作答目标。\n\
-                     2. 简答题的 answer 写成不超过 3 句的要点式参考答案，用陈述句，不要写成大段论述。\n\
-                     3. 不要出开放式、无唯一判断标准的讨论题：禁止\"你觉得\"\"你会怎么选\"\"请谈谈你的看法\"\
-                     \"请说明你的理由\"这类设问；需要考取舍时，把条件写进题干（给出具体阈值、负载或成本），\
-                     让答案有明确的对错。\n\
-                     4. 题目要能被单独判分：不依赖\"上面三种\"\"本节提到的\"这类上下文指代，题干自身说清对象。\n\n\
-                     知识点：{kps}\n\n\
-                     学习内容：\n{unit_text}"
-                )),
-            ],
+            resolved_model(settings, LlmUse::Quiz),
+            quiz_messages(unit_text, knowledge_points, mcq_n, short_n),
             settings.disable_thinking,
         )
         .await?
@@ -787,10 +953,10 @@ fn mock_quiz_json(knowledge_points: &[String], mcq_n: usize, short_n: usize) -> 
         let k = kp(i);
         questions.push(serde_json::json!({
             "qtype": "short",
-            "stem": format!("请用自己的话简要说明「{k}」。"),
+            "stem": format!("同学说他已经了解「{k}」，却用它解释所有新现象，所得结论往往不成立。他的理解可能漏掉了哪项适用条件？"),
             "options": [],
-            "answer": format!("{k} 的核心含义是……（参考答案）"),
-            "explanation": "mock 解析：能说出核心含义即可。",
+            "answer": format!("「{k}」只在原文给出的条件下成立，不能脱离这些条件套用到所有现象；示范回答要结合原理解释这个边界。"),
+            "explanation": "mock 解析：根据材料回到知识的适用条件，比复述定义更重要。",
             "knowledge_point": k,
         }));
     }
@@ -804,8 +970,38 @@ struct GradeVerdict {
     comment: String,
 }
 
+fn grade_short_messages(
+    unit_text: &str,
+    stem: &str,
+    reference: &str,
+    given: &str,
+) -> Vec<ChatMessage> {
+    vec![
+        ChatMessage::system("你是一位尊重学生思路的中文学习伙伴，只输出 JSON。"),
+        ChatMessage::user(&format!(
+            "请判断学生是否理解了这道问答题所考查的内容，并给他像同伴交流一样的具体反馈。\n\
+             学习材料：\n{unit_text}\n\n\
+             题目：{stem}\n\
+             示范回答：{reference}\n\
+             学生答案：{given}\n\
+             判断标准：\n\
+             1. 以题目条件和学习材料为依据，看学生是否真的说清了关键关系或推理，不是看他像不像示范回答。\n\
+             2. 表达随意、很简短、用例子或类比都可以；口语、倒装、不完整句式不能成为扣分理由。\
+             不要求固定术语、分点格式、篇幅或覆盖示范回答的每个措辞。直接照抄示范回答但没有理解内容时，不能算对。\n\
+             3. 不同结论若有材料支持且言之有理，也可以判对；不能擅自增加题目没有的考试要求。\n\
+             4. 结论和关键推理都合理才判 true。完全答非所问、关键关系错误或缺少必要依据才判 false；\
+             只有次要遗漏或表达不完整时，不要为了凑齐要点判错。\n\
+             5. comment 用 1–2 句自然中文，先具体指出学生理解得好的地方，再补充真正缺失或弄错的地方。\
+             正确时不要复述示范回答、不要喊空泛口号；不正确时不要只说\"回答错误\"或\"请参考标准答案\"，\
+             也不要堆砌考点编号或写一篇微型讲义。\n\
+             严格只输出 JSON：{{\"correct\": true 或 false, \"comment\": \"给学生的具体反馈\"}}。"
+        )),
+    ]
+}
+
 pub async fn grade_short(
     settings: &LlmSettings,
+    unit_text: &str,
     stem: &str,
     reference: &str,
     given: &str,
@@ -813,25 +1009,15 @@ pub async fn grade_short(
     let raw = if is_mock_enabled() {
         serde_json::json!({
             "correct": given.trim().len() >= 10,
-            "comment": "mock 点评",
+            "comment": "mock 点评：说说你依据的关键条件和推理。",
         })
         .to_string()
     } else {
         chat(
             &settings.base_url,
             &settings.api_key,
-            &settings.model,
-            vec![
-                ChatMessage::system("你是一位宽容但严格的中文阅卷老师，只输出 JSON。"),
-                ChatMessage::user(&format!(
-                    "请判断学生的简答题是否答对。\n\
-                     题目：{stem}\n\
-                     参考答案：{reference}\n\
-                     学生答案：{given}\n\
-                     判断标准：学生答案表达了参考答案的核心含义即算正确，不要求措辞一致。\
-                     严格只输出 JSON：{{\"correct\": true 或 false, \"comment\": \"一句中文点评\"}}。"
-                )),
-            ],
+            resolved_model(settings, LlmUse::Grading),
+            grade_short_messages(unit_text, stem, reference, given),
             settings.disable_thinking,
         )
         .await?
@@ -859,15 +1045,10 @@ pub async fn ask_stream(
             on_delta,
         ));
     }
-    chat_stream(
+    chat_stream_for(
         settings,
-        vec![
-            ChatMessage::system("你是一位耐心的中文学习助教，回答要准确、简洁。"),
-            ChatMessage::user(&format!(
-                "{prev}学习内容：\n{unit_text}\n\n学生的问题：{question}\n\n请基于学习内容回答问题，用中文。",
-                prev = prev_context_section(prev_context)
-            )),
-        ],
+        LlmUse::Ask,
+        ask_messages(settings, unit_text, prev_context, question),
         on_delta,
     )
     .await
@@ -888,15 +1069,10 @@ pub async fn ask_selection_stream(
             on_delta,
         ));
     }
-    chat_stream(
+    chat_stream_for(
         settings,
-        vec![
-            ChatMessage::system("你是一位耐心的中文学习助教，回答要准确、简洁。"),
-            ChatMessage::user(&format!(
-                "{prev}学习内容：\n{unit_text}\n\n【用户选中的原文】\n{quote}\n\n学生的问题：{question}\n\n请基于学习内容和选中的原文回答问题，用中文。",
-                prev = prev_context_section(prev_context)
-            )),
-        ],
+        LlmUse::Ask,
+        ask_selection_messages(settings, unit_text, prev_context, quote, question),
         on_delta,
     )
     .await
@@ -909,7 +1085,7 @@ pub async fn summarize(settings: &LlmSettings, unit_text: &str) -> Result<String
     chat(
         &settings.base_url,
         &settings.api_key,
-        &settings.model,
+        resolved_model(settings, LlmUse::Summarize),
         vec![
             ChatMessage::system("你是一位严谨的中文学习助教，只输出摘要正文。"),
             ChatMessage::user(&format!(
@@ -929,7 +1105,7 @@ pub async fn ping(settings: &LlmSettings) -> Result<(), String> {
     chat(
         &settings.base_url,
         &settings.api_key,
-        &settings.model,
+        resolved_model(settings, LlmUse::Ping),
         vec![
             ChatMessage::system("You are a helpful assistant."),
             ChatMessage::user("请只回复两个字：成功"),
@@ -996,7 +1172,265 @@ mod tests {
             model: "test-model".to_string(),
             auto_start_reading: false,
             disable_thinking: false,
+            ..LlmSettings::default()
         }
+    }
+
+    fn reading_settings(style: &str, depth: &str) -> LlmSettings {
+        LlmSettings {
+            reading_style: style.to_string(),
+            reading_depth: depth.to_string(),
+            ..mock_settings()
+        }
+    }
+
+    fn all_reading_message_builders(
+    ) -> Vec<(&'static str, Box<dyn Fn(&LlmSettings) -> Vec<ChatMessage>>)> {
+        vec![
+            (
+                "explain",
+                Box::new(|s| explain_messages(s, "阅读内容", None)),
+            ),
+            (
+                "explain_chapter",
+                Box::new(|s| explain_chapter_messages(s, "章标题", "阅读内容", None)),
+            ),
+            (
+                "ask",
+                Box::new(|s| ask_messages(s, "阅读内容", None, "问题")),
+            ),
+            (
+                "ask_selection",
+                Box::new(|s| ask_selection_messages(s, "阅读内容", None, "选中句", "问题")),
+            ),
+        ]
+    }
+
+    /// 连续调用真实的 prompt 构造函数：上一轮的消息不参与下一轮构造。
+    fn consecutive_seeded_prompts(
+        build: impl Fn(&LlmSettings) -> Vec<ChatMessage>,
+        first_seed: &str,
+    ) -> (String, String) {
+        let socratic = reading_settings("socratic", "deep");
+        let mut first = build(&socratic);
+        first[1].content.push_str(first_seed);
+        let default = reading_settings("default", "standard");
+        let second = build(&default);
+        (first.remove(1).content, second[1].content.clone())
+    }
+
+    #[test]
+    fn resolved_model_covers_every_business_use() {
+        let settings = LlmSettings {
+            reading_model: Some("阅读模型".to_string()),
+            quiz_model: Some("出题模型".to_string()),
+            grading_model: Some("判分模型".to_string()),
+            ..mock_settings()
+        };
+        let expected = [
+            (LlmUse::Explain, "阅读模型", "讲解请求"),
+            (LlmUse::KnowledgePoints, "阅读模型", "知识点请求"),
+            (LlmUse::Quiz, "出题模型", "出题请求"),
+            (LlmUse::Grading, "判分模型", "判分请求"),
+            (LlmUse::Ask, "阅读模型", "答疑请求"),
+            (LlmUse::Summarize, "阅读模型", "摘要请求"),
+            (LlmUse::Ping, "test-model", "连接测试"),
+        ];
+        for (usage, model, prompt) in expected {
+            let message = ChatMessage::user(prompt);
+            assert_eq!(message.role, "user");
+            assert_eq!(message.content, prompt);
+            assert_eq!(resolved_model(&settings, usage), model);
+        }
+    }
+
+    #[test]
+    fn absent_and_blank_model_preferences_fall_back_to_primary() {
+        let mut settings = mock_settings();
+        for usage in [
+            LlmUse::Explain,
+            LlmUse::KnowledgePoints,
+            LlmUse::Quiz,
+            LlmUse::Grading,
+            LlmUse::Ask,
+            LlmUse::Summarize,
+            LlmUse::Ping,
+        ] {
+            assert_eq!(resolved_model(&settings, usage), "test-model");
+        }
+        settings.reading_model = Some("  阅读模型  ".to_string());
+        assert_eq!(
+            resolved_model(&settings, LlmUse::Explain),
+            "阅读模型",
+            "已配置的外围空白不应发给 API",
+        );
+        settings.reading_model = Some(String::new());
+        settings.quiz_model = Some(" \n ".to_string());
+        assert_eq!(resolved_model(&settings, LlmUse::Explain), "test-model");
+        assert_eq!(resolved_model(&settings, LlmUse::Quiz), "test-model");
+    }
+
+    #[test]
+    fn all_styles_and_depths_are_independent_utf8_prompt_segments() {
+        let styles = [
+            ("default", "自然、耐心"),
+            ("exam", "应试导向"),
+            ("popular", "科普式"),
+            ("socratic", "苏格拉底式"),
+        ];
+        for (style, needle) in styles {
+            let settings = reading_settings(style, "deep");
+            let messages = explain_messages(&settings, "中文学习内容", None);
+            assert_eq!(messages.len(), 2);
+            let prompt = &messages[1].content;
+            assert!(prompt.contains(needle), "缺少风格 {style}：{prompt}");
+            let style_section = prompt
+                .split_once("【本次领读风格】\n")
+                .and_then(|(_, rest)| rest.split_once("\n\n【本次讲解深度】"))
+                .map(|(section, _)| section)
+                .expect("风格应是独立段落");
+            assert!(style_section.contains(needle));
+            assert!(!style_section.contains("深入充分"));
+        }
+        for (depth, needle) in [
+            ("concise", "简明扼要"),
+            ("standard", "详略适中"),
+            ("deep", "深入充分"),
+        ] {
+            let settings = reading_settings("exam", depth);
+            let prompt = explain_messages(&settings, "中文学习内容", None)[1]
+                .content
+                .clone();
+            let depth_section = prompt.split_once("【本次讲解深度】\n").unwrap().1;
+            assert!(depth_section.contains(needle), "深度 {depth}：{prompt}");
+            assert!(depth_section.contains("这些领读偏好只影响本次表达"));
+        }
+        // 缺省值与未知/空白值均稳定回退，不残留前一次请求内容。
+        assert_eq!(
+            reading_preference_prompt(&READING_STYLE_PROMPTS, ""),
+            READING_STYLE_PROMPTS[0].1
+        );
+        assert_eq!(
+            reading_preference_prompt(&READING_DEPTH_PROMPTS, "unknown"),
+            READING_DEPTH_PROMPTS[0].1
+        );
+    }
+
+    #[test]
+    fn all_reading_prompt_helpers_inject_preferences() {
+        let settings = reading_settings("popular", "concise");
+        for (_, build) in all_reading_message_builders() {
+            let messages = build(&settings);
+            assert_eq!(messages.len(), 2);
+            let message = &messages[1];
+            assert_eq!(message.role, "user");
+            assert!(message.content.contains("采用科普式的领读风格"));
+            assert!(message.content.contains("讲解简明扼要"));
+        }
+    }
+
+    #[test]
+    fn seeded_style_does_not_leak_into_the_next_prompt() {
+        for (name, build) in all_reading_message_builders() {
+            let (first, second) = consecutive_seeded_prompts(build, "上一轮独有标记");
+            assert!(first.contains("苏格拉底式"), "{name}: {first}");
+            assert!(first.contains("深入充分"));
+            assert!(second.contains("自然、耐心"), "{name}: {second}");
+            assert!(second.contains("详略适中"));
+            assert!(!second.contains("苏格拉底式"), "{name}: {second}");
+            assert!(!second.contains("深入充分"), "{name}: {second}");
+            assert!(!second.contains("上一轮独有标记"), "{name}: {second}");
+        }
+    }
+
+    #[test]
+    fn inherited_mock_settings_use_default_reading_preferences() {
+        let settings = mock_settings();
+        assert_eq!(settings.reading_style, "default");
+        assert_eq!(settings.reading_depth, "standard");
+        assert_eq!(settings.reading_model, None);
+        assert_eq!(settings.quiz_model, None);
+        assert_eq!(settings.grading_model, None);
+    }
+
+    #[test]
+    fn legacy_settings_json_defaults_to_primary_and_standard_reading() {
+        let settings: LlmSettings = serde_json::from_str(
+            r#"{
+                "base_url":"https://api.example.com",
+                "api_key":"key",
+                "model":"主模型",
+                "reading_model":null,
+                "quiz_model":"",
+                "grading_model":"   "
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(settings.reading_style, "default");
+        assert_eq!(settings.reading_depth, "standard");
+        for usage in [
+            LlmUse::Explain,
+            LlmUse::KnowledgePoints,
+            LlmUse::Quiz,
+            LlmUse::Grading,
+            LlmUse::Ask,
+            LlmUse::Summarize,
+            LlmUse::Ping,
+        ] {
+            assert_eq!(resolved_model(&settings, usage), "主模型");
+        }
+    }
+
+    #[test]
+    fn quiz_prompt_requires_scenarios_not_recitation() {
+        let prompt =
+            &quiz_messages("缓存只在输入相同时命中。", &["缓存命中条件".into()], 3, 2)[1].content;
+        for expected in [
+            "具体情境或对象",
+            "通常一两句话就能回答",
+            "不要出\"请定义／简述／概括／总结／列举",
+            "不要要求分点作答",
+            "不要求学习者逐字或逐点覆盖",
+        ] {
+            assert!(
+                prompt.contains(expected),
+                "问答题约束缺失：{expected}\n{prompt}"
+            );
+        }
+        for banned_old_wording in ["要点式参考答案", "有唯一判断标准的讨论题"] {
+            assert!(
+                !prompt.contains(banned_old_wording),
+                "不应保留把问答题拉回标准答案的旧约束：{banned_old_wording}"
+            );
+        }
+    }
+
+    #[test]
+    fn grading_prompt_assesses_understanding_with_source_context() {
+        let messages = grade_short_messages(
+            "输入相同才能复用缓存结果。",
+            "为什么调大缓存仍未减少计算？",
+            "输入可能不同。",
+            "可能是输入变了。",
+        );
+        let prompt = &messages[1].content;
+        assert!(prompt.contains("输入相同才能复用缓存结果。"));
+        assert!(prompt.contains("可能是输入变了。"));
+        for expected in [
+            "不是看他像不像示范回答",
+            "表达随意、很简短、用例子或类比都可以",
+            "不同结论若有材料支持且言之有理，也可以判对",
+            "只有次要遗漏或表达不完整时，不要为了凑齐要点判错",
+        ] {
+            assert!(
+                prompt.contains(expected),
+                "判分规则缺失：{expected}\n{prompt}"
+            );
+        }
+        assert!(
+            !prompt.contains("不要求措辞一致"),
+            "不能只放松措辞而仍逐点照标准答案判分"
+        );
     }
 
     #[tokio::test]
@@ -1080,6 +1514,9 @@ mod tests {
         assert_eq!(drafts[0].qtype, QType::Mcq);
         assert!(drafts.iter().any(|d| d.knowledge_point == "阿尔法"));
         assert!(drafts.iter().any(|d| d.knowledge_point == "伽马"));
+        let shorts: Vec<_> = drafts.iter().filter(|d| d.qtype == QType::Short).collect();
+        assert!(shorts.iter().all(|d| d.stem.contains("适用条件")));
+        assert!(shorts.iter().all(|d| !d.stem.contains("简要说明")));
     }
 
     #[tokio::test]
@@ -1106,11 +1543,14 @@ mod tests {
     async fn mock_grade_short() {
         std::env::set_var("AI_TEACHER_MOCK_LLM", "1");
         let s = mock_settings();
-        let (ok, comment) = grade_short(&s, "题干", "参考答案", "太短").await.unwrap();
+        let (ok, comment) = grade_short(&s, "原文", "题干", "参考答案", "太短")
+            .await
+            .unwrap();
         assert!(!ok);
-        assert_eq!(comment, "mock 点评");
+        assert_eq!(comment, "mock 点评：说说你依据的关键条件和推理。");
         let (ok, _) = grade_short(
             &s,
+            "原文",
             "题干",
             "参考答案",
             "这是一段足够长的学生回答，阐述了核心含义",
@@ -1276,7 +1716,10 @@ mod tests {
 
             let (mut second, _) = listener.accept().unwrap();
             let body = read_http_request(&mut second);
-            assert!(!body.contains("reasoning_effort"), "重试应去掉思考参数：{body}");
+            assert!(
+                !body.contains("reasoning_effort"),
+                "重试应去掉思考参数：{body}"
+            );
             write_http(
                 &mut second,
                 "200 OK",
@@ -1320,7 +1763,10 @@ mod tests {
 
             let (mut second, _) = listener.accept().unwrap();
             let body = read_http_request(&mut second);
-            assert!(!body.contains("reasoning_effort"), "重试应去掉思考参数：{body}");
+            assert!(
+                !body.contains("reasoning_effort"),
+                "重试应去掉思考参数：{body}"
+            );
             let events = "data: {\"choices\":[{\"delta\":{\"content\":\"答\"}}]}\n\n\
                           data: {\"choices\":[{\"delta\":{\"content\":\"案\"}}]}\n\n\
                           data: [DONE]\n\n";
@@ -1331,14 +1777,38 @@ mod tests {
             base_url: format!("http://{addr}"),
             api_key: "sk-test".to_string(),
             model: "stream-retry-model".to_string(),
-            auto_start_reading: false,
             disable_thinking: true,
+            ..LlmSettings::default()
         };
         let full = chat_stream(&settings, vec![ChatMessage::user("hi")], &mut |_d| {})
             .await
             .unwrap();
         assert_eq!(full, "答案");
         handle.join().unwrap();
+    }
+
+    /// 实际模型选择由求助处的 LlmUse 唯一决定，端点和 key 仍从主 settings 借用。
+    /// 这里用测试消息验证无全局状态、也不会修改任何业务输入。
+    #[test]
+    fn preference_changes_do_not_mutate_settings_or_request_messages() {
+        let settings = LlmSettings {
+            reading_model: Some("阅读模型".to_string()),
+            quiz_model: Some("出题模型".to_string()),
+            grading_model: Some("判分模型".to_string()),
+            reading_style: "exam".to_string(),
+            reading_depth: "concise".to_string(),
+            ..mock_settings()
+        };
+        let before = ChatMessage::user("中文测试问题");
+        let before_json = serde_json::to_string(&before).unwrap();
+        assert_eq!(resolved_model(&settings, LlmUse::Quiz), "出题模型");
+        assert_eq!(resolved_model(&settings, LlmUse::Grading), "判分模型");
+        assert_eq!(resolved_model(&settings, LlmUse::Explain), "阅读模型");
+        let after = ChatMessage::user("中文测试问题");
+        assert_eq!(serde_json::to_string(&after).unwrap(), before_json);
+        assert_eq!(settings.model, "test-model");
+        assert_eq!(settings.base_url, "http://127.0.0.1:9");
+        assert_eq!(settings.api_key, "");
     }
 
     #[test]
@@ -1481,8 +1951,8 @@ mod tests {
             base_url: format!("http://{addr}"),
             api_key: "sk-test".to_string(),
             model: "m".to_string(),
-            auto_start_reading: false,
             disable_thinking: false,
+            ..LlmSettings::default()
         };
         let mut deltas: Vec<String> = Vec::new();
         let full = chat_stream(&settings, vec![ChatMessage::user("hi")], &mut |d: &str| {

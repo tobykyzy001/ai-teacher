@@ -231,11 +231,9 @@ fn extract_with_lopdf(path: &Path) -> Result<Vec<String>, String> {
         Ok(Err(e)) => Err(format!(
             "{e}。可尝试用阅读器另存为 PDF 或先转成 EPUB/TXT 后再导入"
         )),
-        Err(_) => Err(
-            "无法解析 PDF：该文件可能已损坏或使用了暂不支持的结构。\
+        Err(_) => Err("无法解析 PDF：该文件可能已损坏或使用了暂不支持的结构。\
              可尝试用阅读器另存为 PDF 或先转成 EPUB/TXT 后再导入"
-                .to_string(),
-        ),
+            .to_string()),
     }
 }
 
@@ -461,10 +459,7 @@ fn split_pdf_chapters(blocks: Vec<String>) -> Vec<Chapter> {
         }
     }
     if !paragraphs.is_empty() {
-        chapters.push(Chapter {
-            title,
-            paragraphs,
-        });
+        chapters.push(Chapter { title, paragraphs });
     }
     chapters
 }
@@ -489,7 +484,8 @@ fn is_pdf_heading(block: &str) -> bool {
     }
     if t.starts_with('第') {
         let rest = &t['第'.len_utf8()..];
-        let end = rest.find(|c: char| !c.is_ascii_digit() && !"一二三四五六七八九十百零〇两".contains(c));
+        let end =
+            rest.find(|c: char| !c.is_ascii_digit() && !"一二三四五六七八九十百零〇两".contains(c));
         if let Some(end) = end {
             let numeral = &rest[..end];
             let tail = &rest[end..];
@@ -777,7 +773,12 @@ fn collect_cover_meta(e: &quick_xml::events::BytesStart<'_>, data: &mut OpfData)
     let mut content = String::new();
     for attr in e.attributes().flatten() {
         match local_name(attr.key.as_ref()) {
-            b"name" => name = attr.unescape_value().map(|v| v.into_owned()).unwrap_or_default(),
+            b"name" => {
+                name = attr
+                    .unescape_value()
+                    .map(|v| v.into_owned())
+                    .unwrap_or_default()
+            }
             b"content" => {
                 content = attr
                     .unescape_value()
@@ -843,7 +844,13 @@ pub fn extract_epub_cover(bytes: &[u8]) -> Option<(String, Vec<u8>)> {
     })?;
     let zip_path = resolve_href(&opf_dir, &href);
     let data = read_zip_bytes(&mut zip, &zip_path)?;
-    let ext = match href.rsplit('.').next().unwrap_or("").to_lowercase().as_str() {
+    let ext = match href
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_lowercase()
+        .as_str()
+    {
         "jpg" | "jpeg" => "jpg",
         "png" => "png",
         "webp" => "webp",
@@ -1452,7 +1459,11 @@ fn numbered_item(line: &str) -> bool {
         return !after.trim_start().is_empty();
     }
     match rest.chars().next() {
-        Some('.') | Some(')') => rest.chars().nth(1).map(|c| c.is_whitespace()).unwrap_or(false),
+        Some('.') | Some(')') => rest
+            .chars()
+            .nth(1)
+            .map(|c| c.is_whitespace())
+            .unwrap_or(false),
         Some('、') | Some('．') => true,
         _ => false,
     }
@@ -1866,7 +1877,6 @@ mod tests {
         "字".repeat(n)
     }
 
-
     #[test]
     fn strip_exercises_removes_orphan_question_list_at_unit_start() {
         // 切块落在习题中间：标题留在上一单元，三条题干落到本单元开头（真实形态）
@@ -1922,7 +1932,10 @@ mod tests {
         assert!(!out.contains("思考题"), "习题标题应被剥掉：{out}");
         assert!(!out.contains("第一种方式叫什么"), "习题题干应被剥掉：{out}");
         assert!(!out.contains("提示："), "答案键应被剥掉：{out}");
-        assert!(!out.contains("保 ITL 烧 decode 大 batch"), "答案内容应被剥掉：{out}");
+        assert!(
+            !out.contains("保 ITL 烧 decode 大 batch"),
+            "答案内容应被剥掉：{out}"
+        );
     }
 
     #[test]
@@ -1981,10 +1994,19 @@ mod tests {
                     **第 1 天：把账算清**\n\
                     - 上午：读导读。";
         let out = strip_exercises(text);
-        assert!(out.contains("## 附录 F 动手任务总表与 3 天速成路线"), "{out}");
+        assert!(
+            out.contains("## 附录 F 动手任务总表与 3 天速成路线"),
+            "{out}"
+        );
         assert!(out.contains("本附录把全书的动手任务汇总"), "{out}");
-        assert!(!out.contains("F.1 全书动手任务清单"), "叶子任务清单应剥掉：{out}");
-        assert!(out.contains("### F.2 3 天速成路线"), "学习路线必须保留：{out}");
+        assert!(
+            !out.contains("F.1 全书动手任务清单"),
+            "叶子任务清单应剥掉：{out}"
+        );
+        assert!(
+            out.contains("### F.2 3 天速成路线"),
+            "学习路线必须保留：{out}"
+        );
         assert!(out.contains("上午：读导读"), "{out}");
     }
 
@@ -2284,7 +2306,10 @@ mod tests {
     #[test]
     fn pdf_control_characters_stripped() {
         // 实测部分 PDF（Pro 6000D 测试报告）逐对象输出后残留 \u{1} 等控制字符
-        assert_eq!(clean_pdf_text("Pro\u{1}6000D\u{1}异构\u{7f}测试"), "Pro6000D异构测试");
+        assert_eq!(
+            clean_pdf_text("Pro\u{1}6000D\u{1}异构\u{7f}测试"),
+            "Pro6000D异构测试"
+        );
         assert_eq!(clean_pdf_text("正常文本\u{0}继续"), "正常文本继续");
     }
 
@@ -2466,14 +2491,23 @@ mod tests {
         assert_eq!(parsed.images.len(), 1);
         assert_eq!(parsed.images[0].1, png);
         let name = &parsed.images[0].0;
-        assert!(name.ends_with("_f1.png"), "输出文件名应保留原文件名：{name}");
+        assert!(
+            name.ends_with("_f1.png"),
+            "输出文件名应保留原文件名：{name}"
+        );
         let p1 = &parsed.chapters[0].paragraphs;
         assert!(
             p1.iter().any(|p| p == &format!("![图1 流程]({name})")),
             "{p1:?}"
         );
-        assert!(!p1.iter().any(|p| p.contains("figs/")), "zip 内路径不应出现在正文：{p1:?}");
-        assert!(parsed.chapters[1].paragraphs.iter().any(|p| p == &format!("![]({name})")));
+        assert!(
+            !p1.iter().any(|p| p.contains("figs/")),
+            "zip 内路径不应出现在正文：{p1:?}"
+        );
+        assert!(parsed.chapters[1]
+            .paragraphs
+            .iter()
+            .any(|p| p == &format!("![]({name})")));
 
         // 导入后图片写入 books/<id>/images/，单元文本保留标记
         let dir = temp_dir("img-import");
@@ -2481,7 +2515,10 @@ mod tests {
         let epub_path = dir.join("img-book.epub");
         std::fs::write(&epub_path, &buf).unwrap();
         let summary = import_book(&db, &dir, epub_path.to_string_lossy().as_ref()).unwrap();
-        let images_dir = dir.join("books").join(summary.id.to_string()).join("images");
+        let images_dir = dir
+            .join("books")
+            .join(summary.id.to_string())
+            .join("images");
         assert!(images_dir.join(name).exists());
         let unit_text = std::fs::read_to_string(
             dir.join("books")
@@ -2550,7 +2587,10 @@ mod tests {
         // 无封面声明的书静默返回 None
         let no_cover = OPF_COVER_EPUB3
             .replace(r#" properties="cover-image""#, "")
-            .replace(r#"<item id="cv3" href="pics/cover.png" media-type="image/png"/>"#, "");
+            .replace(
+                r#"<item id="cv3" href="pics/cover.png" media-type="image/png"/>"#,
+                "",
+            );
         assert!(extract_epub_cover(&make_epub_with_cover(&no_cover)).is_none());
     }
 
@@ -2893,9 +2933,3 @@ mod tests {
         assert!(back.trim_start_matches(['…', '\n']).starts_with("尾"));
     }
 }
-
-
-
-
-
-

@@ -30,8 +30,31 @@
     </n-empty>
 
     <template v-else-if="plan">
+      <section v-if="plan.goals.length" class="section goal-section">
+        <div class="section-head">
+          <h3 class="section-title">阅读目标</h3>
+          <span class="muted small">到期复习独立计算，不受目标配额限制</span>
+        </div>
+        <n-card v-for="goal in plan.goals" :key="goal.book_id" class="goal-card" size="small">
+          <div class="goal-heading">
+            <strong>《{{ goal.book_title }}》</strong>
+            <n-tag size="small" :type="goal.completed_today >= goal.daily_target ? 'success' : 'warning'" :bordered="false">
+              {{ goal.daily_target === 0 ? '目标已完成' : `${goal.completed_today}/${goal.daily_target} 小节` }}
+            </n-tag>
+          </div>
+          <div class="muted small goal-summary">{{ goal.weeks }} 周计划 · 剩 {{ goal.days_left }} 天 · 全书剩余 {{ goal.remaining_units }} 小节</div>
+          <n-text v-if="goal.today_units.length === 0" class="muted small">今天的阅读配额已完成，也可自行继续学习。</n-text>
+          <div v-else class="goal-units">
+            <div v-for="unit in goal.today_units" :key="unit.id" class="goal-unit-row">
+              <span>{{ unit.title }}</span>
+              <n-button size="small" class="btn-tinted" @click="router.push(`/reading/${unit.id}`)">继续阅读</n-button>
+            </div>
+          </div>
+          <n-button text class="goal-settings" @click="router.push(`/books/${goal.book_id}`)">调整或管理目标 →</n-button>
+        </n-card>
+      </section>
       <n-empty
-        v-if="plan.due_reviews.length === 0 && plan.next_units.length === 0"
+        v-if="plan.due_reviews.length === 0 && plan.next_units.length === 0 && plan.goals.length === 0"
         description="今天没有任务，去书架导入一本书吧。"
       >
         <n-button type="primary" @click="router.push('/library')">去书架</n-button>
@@ -178,6 +201,8 @@ import { RefreshOutline } from "@vicons/ionicons5";
 import {
   NAlert,
   NButton,
+  NCard,
+  NText,
   NEmpty,
   NIcon,
   NInput,
@@ -418,6 +443,48 @@ async function finishItem(passed: boolean): Promise<void> {
 
   .row-side {
     justify-content: space-between;
+  }
+}
+
+.goal-section {
+  margin-top: var(--space-2);
+}
+
+.goal-card + .goal-card {
+  margin-top: var(--space-3);
+}
+
+.goal-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.goal-summary {
+  margin-top: var(--space-2);
+  line-height: 1.75;
+}
+
+.goal-unit-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+  margin-top: var(--space-3);
+  border-top: 1px solid var(--separator);
+}
+
+.goal-settings {
+  margin-top: var(--space-3);
+}
+
+@media (max-width: 820px) {
+  .goal-unit-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-2);
   }
 }
 

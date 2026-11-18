@@ -1,10 +1,12 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::models::{BookSummary, ReviewItem, Unit, UnitStatus, WrongQuestion};
+use crate::models::{
+    BookSummary, ResplitPart, ResplitPreview, ReviewItem, Unit, UnitStatus, WrongQuestion,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -14,6 +16,8 @@ pub enum DbError {
     Io(#[from] std::io::Error),
     #[error("数据库连接暂不可用，请重试")]
     LockPoisoned,
+    #[error("数据校验失败：{0}")]
+    InvalidData(String),
 }
 
 pub struct Db {
@@ -23,14 +27,11 @@ pub struct Db {
     dirty: std::sync::atomic::AtomicBool,
 }
 
-/// 数据 schema 版本，写进 SQLite 的 `PRAGMA user_version`。
-///
-/// 用途：备份包 manifest 里记这个号，恢复前比对，避免"旧版应用存的快照灌进新版应用"
-/// ——本项目 schema 只有 `CREATE TABLE IF NOT EXISTS`、没有 ALTER 迁移，缺列的表会被
-/// 静默跳过，随后查询直接 `no such column` 崩在启动阶段。
-///
-/// 铁律：**只增不减**。加表/加列时把它 +1。
+/// 开发期备份元数据中的结构标识；不驱动自动迁移，也不递增数据库的 user_version。
+/// 只有用户确认结构变更后才改这里；旧库或旧备份不匹配时需重建开发库，不能自动 ALTER。
 pub const SCHEMA_VERSION: i64 = 1;
+
+mod split;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS books (
@@ -103,8 +104,81 @@ CREATE INDEX IF NOT EXISTS idx_questions_unit ON questions(unit_id);
 CREATE INDEX IF NOT EXISTS idx_attempts_question ON attempts(question_id, id);
 CREATE INDEX IF NOT EXISTS idx_review_due ON review_items(due_date, id);
 CREATE INDEX IF NOT EXISTS idx_review_unit ON review_items(unit_id);
+-- 开发阶段的新表：只在这里建，旧数据由显式新库导入脚本搬运。
+CREATE TABLE IF NOT EXISTS learning_goals (
+    book_id INTEGER PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE,
+    weeks INTEGER NOT NULL CHECK(weeks BETWEEN 1 AND 104),
+    started_date TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+);
+-- 重切分仅归档单元行，不删除：旧题、作答和复习外键不受影响。
+CREATE TABLE IF NOT EXISTS unit_revisions (
+    unit_id INTEGER PRIMARY KEY REFERENCES units(id) ON DELETE CASCADE,
+    unit_title TEXT NOT NULL,
+    chapter_title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    archived_at TEXT NOT NULL,
+    child_ids TEXT NOT NULL,
+    active_first INTEGER NOT NULL DEFAULT 0,
+    original_idx INTEGER NOT NULL,
+    original_status TEXT NOT NULL,
+    original_mastery REAL,
+    original_path TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS goal_completions (
+    unit_id INTEGER NOT NULL REFERENCES units(id) ON DELETE CASCADE,
+    book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    completed_date TEXT NOT NULL,
+    PRIMARY KEY (unit_id)
+);
+CREATE TABLE IF NOT EXISTS split_revisions (
+    original_unit_id INTEGER PRIMARY KEY REFERENCES units(id) ON DELETE CASCADE,
+    book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    child_ids TEXT NOT NULL
+);
+-- 手动重切后的章归属须持久化，不能再按源文件的默认切分算法推算。
+CREATE TABLE IF NOT EXISTS unit_chapter_overrides (
+    unit_id INTEGER PRIMARY KEY REFERENCES units(id) ON DELETE CASCADE,
+    chapter_title TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_log_date ON learning_log(logged_date);
 ";
+
+/// 开发期结构校验：比较当前 SCHEMA 的完整表定义及索引，不维护迁移清单。
+/// 只比对列会放入同名异义的旧 unit_revisions 表（组 id ≠ unit id）：
+/// 这里将 SQL 排空规范化，识别全部列、主键、UNIQUE / CHECK / FK 以及索引差异。
+fn normalize_schema_sql(sql: &str) -> String {
+    sql.to_ascii_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn validate_current_schema(c: &Connection) -> Result<(), DbError> {
+    let reference = Connection::open_in_memory()?;
+    reference.execute_batch(SCHEMA)?;
+    let object_sql = |conn: &Connection| -> Result<HashMap<String, String>, DbError> {
+        let mut statement = conn.prepare(
+            "SELECT name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name",
+        )?;
+        let objects = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    normalize_schema_sql(&row.get::<_, String>(1)?),
+                ))
+            })?
+            .collect::<Result<HashMap<_, _>, _>>()?;
+        Ok(objects)
+    };
+    if object_sql(c)? != object_sql(&reference)? {
+        return Err(DbError::InvalidData(
+            "开发数据库结构与当前 SCHEMA 不一致。开发阶段不自动迁移，请先备份后重建，再复制数据。".into(),
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 pub struct BookRow {
@@ -214,10 +288,9 @@ impl Db {
 
     fn init(conn: Connection) -> Result<Self, DbError> {
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        // 开发阶段只创建当前 schema，不做版本迁移：旧库不匹配必须删库重建。
         conn.execute_batch(SCHEMA)?;
-        // schema 版本号写进 user_version：老库（user_version=0）在这里被标成当前版本。
-        // 注意它只用于备份包兼容性判断，不驱动任何迁移逻辑。
-        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        validate_current_schema(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
             dirty: std::sync::atomic::AtomicBool::new(false),
@@ -227,14 +300,12 @@ impl Db {
     /// 标记"自上次同步以来有写入"。所有 `insert_*`/`update_*`/`upsert_*`/`delete_*` 走它。
     /// 上传失败时命令层也会调它把标记放回去，供下次重试。
     pub fn mark_dirty(&self) {
-        self.dirty
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.dirty.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// 取走脏标记（读后清零）。同步成功后调用，供 debounce 逻辑判断"要不要传"。
     pub fn take_dirty(&self) -> bool {
-        self.dirty
-            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        self.dirty.swap(false, std::sync::atomic::Ordering::Relaxed)
     }
 
     /// 恢复数据库内容后重置脏标记：刚灌进来的数据就是"已同步"的状态。
@@ -243,9 +314,8 @@ impl Db {
             .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// 本库的 schema 版本（`PRAGMA user_version`）。
-    pub fn schema_version(&self) -> Result<i64, DbError> {
-        self.with_conn(|c| Ok(c.pragma_query_value(None, "user_version", |r| r.get(0))?))
+    pub fn backup_schema_version() -> i64 {
+        SCHEMA_VERSION
     }
 
     /// 关键表行数摘要，用于备份 manifest 与恢复前对比。
@@ -254,12 +324,20 @@ impl Db {
             let one = |sql: &str| -> Result<i64, DbError> {
                 Ok(c.query_row(sql, [], |r| r.get(0))?)
             };
+            let active = |extra: &str| -> Result<i64, DbError> {
+                let sql = match extra {
+                    "done_units" => "SELECT COUNT(*) FROM units u LEFT JOIN unit_revisions r ON r.unit_id = u.id WHERE (r.unit_id IS NULL OR r.active_first = 1) AND u.status IN ('done', 'skipped')",
+                    "units" => "SELECT COUNT(*) FROM units u LEFT JOIN unit_revisions r ON r.unit_id = u.id WHERE (r.unit_id IS NULL OR r.active_first = 1)",
+                    _ => return Err(DbError::InvalidData("未知统计项".to_string())),
+                };
+                Ok(c.query_row(sql, [], |r| r.get(0))?)
+            };
             Ok(crate::models::BackupStats {
                 books: one("SELECT COUNT(*) FROM books")?,
-                units: one("SELECT COUNT(*) FROM units")?,
+                units: active("units")?,
                 attempts: one("SELECT COUNT(*) FROM attempts")?,
                 review_items: one("SELECT COUNT(*) FROM review_items")?,
-                done_units: one("SELECT COUNT(*) FROM units WHERE status = 'done'")?,
+                done_units: active("done_units")?,
             })
         })
     }
@@ -267,10 +345,21 @@ impl Db {
     /// 用另一个数据库文件的内容**热覆盖**当前连接（不重启应用）。
     /// 走 SQLite 的 backup API，比"替换文件 + 重启"安全：旧连接始终指向同一个 inode。
     pub fn restore_from_file(&self, src: &Path) -> Result<(), DbError> {
+        let source = Connection::open_with_flags(
+            src,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        validate_current_schema(&source)?;
+        drop(source);
         let mut conn = self.conn.lock().map_err(|_| DbError::LockPoisoned)?;
-        conn.restore(rusqlite::DatabaseName::Main, src, None::<fn(rusqlite::backup::Progress)>)
-            .map_err(DbError::Sqlite)?;
-        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        conn.restore(
+            rusqlite::DatabaseName::Main,
+            src,
+            None::<fn(rusqlite::backup::Progress)>,
+        )
+        .map_err(DbError::Sqlite)?;
+        // backup API 只复制已通过结构校验的快照，不修改其 schema。
+        conn.execute_batch(SCHEMA)?;
         drop(conn);
         self.clear_dirty();
         Ok(())
@@ -314,9 +403,144 @@ impl Db {
     /// 数据库文件所在目录（= app_data_dir；resolve 数据路径用）。内存库返回 None。
     pub fn data_dir(&self) -> Result<Option<std::path::PathBuf>, DbError> {
         self.with_conn(|c| {
-            Ok(c
-                .path()
+            Ok(c.path()
                 .and_then(|p| std::path::Path::new(p).parent().map(|d| d.to_path_buf())))
+        })
+    }
+
+    // ---------- transactions（一个用户操作中的所有行必须一起成功/回滚） ----------
+
+    fn transaction<T>(
+        &self,
+        f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T, DbError>,
+    ) -> Result<T, DbError> {
+        let mut conn = self.conn.lock().map_err(|_| DbError::LockPoisoned)?;
+        let tx = conn.transaction()?;
+        let out = f(&tx)?;
+        tx.commit()?;
+        self.mark_dirty();
+        Ok(out)
+    }
+
+    // 手动重切分、归档与撤销由 split.rs 提供。
+
+    pub fn set_learning_goal(
+        &self,
+        book_id: i64,
+        weeks: i64,
+        updated_at: &str,
+    ) -> Result<(), DbError> {
+        if !(1..=104).contains(&weeks) {
+            return Err(DbError::InvalidData("周期须为 1–104 周".to_string()));
+        }
+        self.with_write(|c| {
+            c.execute(
+                "INSERT INTO learning_goals (book_id, weeks, started_date, updated_at) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(book_id) DO UPDATE SET weeks = excluded.weeks, updated_at = excluded.updated_at",
+                params![book_id, weeks, updated_at.chars().take(10).collect::<String>(), updated_at],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn delete_learning_goal(&self, book_id: i64) -> Result<(), DbError> {
+        self.with_write(|c| {
+            c.execute(
+                "DELETE FROM learning_goals WHERE book_id = ?1",
+                params![book_id],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn get_learning_goal(
+        &self,
+        book_id: i64,
+    ) -> Result<Option<crate::models::LearningGoal>, DbError> {
+        self.with_conn(|c| {
+            c.query_row(
+                "SELECT g.book_id, b.title, g.weeks,
+                        (SELECT COUNT(*) FROM units u LEFT JOIN unit_revisions r ON r.unit_id = u.id
+                         WHERE u.book_id = b.id AND (r.unit_id IS NULL OR r.active_first = 1)
+                           AND u.status NOT IN ('done', 'skipped')),
+                        (SELECT MIN(u2.idx) FROM units u2 LEFT JOIN unit_revisions r2 ON r2.unit_id = u2.id
+                         WHERE u2.book_id = b.id AND (r2.unit_id IS NULL OR r2.active_first = 1)
+                           AND u2.status NOT IN ('done', 'skipped')),
+                        g.started_date,
+                        (SELECT COUNT(DISTINCT unit_id) FROM goal_completions gc WHERE gc.book_id = b.id AND gc.completed_date = date('now','localtime'))
+                       FROM learning_goals g JOIN books b ON b.id = g.book_id WHERE g.book_id = ?1",
+                params![book_id],
+                |row| {
+                    let completed: i64 = c.query_row("SELECT COUNT(DISTINCT unit_id) FROM goal_completions WHERE book_id = ?1 AND completed_date = date('now','localtime')", params![book_id], |r| r.get(0))?;
+                    Ok(crate::models::LearningGoal {
+                        book_id: row.get(0)?, book_title: row.get(1)?, weeks: row.get(2)?,
+                        remaining_units: row.get(3)?, first_remaining_idx: row.get(4)?,
+                        started_at: row.get(5)?, completed_today: completed,
+                    })
+                },
+            ).optional().map_err(Into::into)
+        })
+    }
+
+    // 全书章归属快照由 split.rs 保存。
+
+    pub fn list_resplit_units(&self, book_id: i64) -> Result<Vec<i64>, DbError> {
+        self.with_conn(|c| {
+            let mut stmt = c.prepare("SELECT original_unit_id FROM split_revisions WHERE book_id = ?1 ORDER BY original_unit_id")?;
+            let rows = stmt.query_map(params![book_id], |r| r.get(0))?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        })
+    }
+
+    pub fn list_learning_goals(&self) -> Result<Vec<crate::models::LearningGoal>, DbError> {
+        self.with_conn(|c| {
+            let mut stmt = c.prepare(
+                "SELECT g.book_id, b.title, g.weeks,
+                        (SELECT COUNT(*) FROM units u LEFT JOIN unit_revisions r ON r.unit_id = u.id
+                         WHERE u.book_id = b.id AND (r.unit_id IS NULL OR r.active_first = 1)
+                           AND u.status NOT IN ('done', 'skipped')),
+                        (SELECT MIN(u2.idx) FROM units u2 LEFT JOIN unit_revisions r2 ON r2.unit_id = u2.id
+                         WHERE u2.book_id = b.id AND (r2.unit_id IS NULL OR r2.active_first = 1)
+                           AND u2.status NOT IN ('done', 'skipped')),
+                        g.started_date
+                       FROM learning_goals g JOIN books b ON b.id = g.book_id ORDER BY g.book_id",
+            )?;
+            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+            let rows = stmt.query_map([], |row| {
+                let mut g = crate::models::LearningGoal {
+                    book_id: row.get(0)?, book_title: row.get(1)?, weeks: row.get(2)?,
+                    remaining_units: row.get(3)?, first_remaining_idx: row.get(4)?,
+                    started_at: row.get(5)?, completed_today: 0,
+                };
+                g.started_at = row.get(5)?;
+                g.completed_today = c.query_row("SELECT COUNT(DISTINCT unit_id) FROM goal_completions WHERE book_id = ?1 AND completed_date = ?2", params![g.book_id,today], |r| r.get(0))?;
+                Ok(g)
+            })?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        })
+    }
+
+    pub fn record_unit_started(
+        &self,
+        unit_id: i64,
+        book_id: i64,
+        date: &str,
+    ) -> Result<(), DbError> {
+        self.with_write(|c| {
+            c.execute("INSERT OR IGNORE INTO goal_completions(unit_id, book_id, completed_date) VALUES(?1,?2,?3)", params![unit_id,book_id,date])?;
+            Ok(())
+        })
+    }
+
+    /// 某本书在某天已经开始的单元 id（`goal_completions` 只记录首次开始的那一次）。
+    /// 今日配额靠它排除"已经开始阅读但还没答完题"的小节，否则同一节既计入完成量又重新出现。
+    pub fn goal_completed_units_on(&self, book_id: i64, date: &str) -> Result<Vec<i64>, DbError> {
+        self.with_conn(|c| {
+            let mut stmt = c.prepare(
+                "SELECT unit_id FROM goal_completions WHERE book_id = ?1 AND completed_date = ?2",
+            )?;
+            let rows = stmt.query_map(params![book_id, date], |r| r.get::<_, i64>(0))?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
         })
     }
 
@@ -408,8 +632,8 @@ impl Db {
         self.with_conn(|c| {
             let mut stmt = c.prepare(
                 "SELECT b.id, b.title, b.format, b.added_at,
-                        (SELECT COUNT(*) FROM units u WHERE u.book_id = b.id) AS total_units,
-                        (SELECT COUNT(*) FROM units u WHERE u.book_id = b.id AND u.status IN ('done', 'skipped')) AS done_units
+                        (SELECT COUNT(*) FROM units u LEFT JOIN unit_revisions r ON r.unit_id = u.id WHERE u.book_id = b.id AND (r.unit_id IS NULL OR r.active_first = 1)) AS total_units,
+                        (SELECT COUNT(*) FROM units u LEFT JOIN unit_revisions r ON r.unit_id = u.id WHERE u.book_id = b.id AND (r.unit_id IS NULL OR r.active_first = 1) AND u.status IN ('done', 'skipped')) AS done_units
                  FROM books b ORDER BY b.id",
             )?;
             let rows = stmt.query_map([], |row| {
@@ -452,12 +676,12 @@ impl Db {
         })
     }
 
-    #[cfg(test)]
     pub fn list_units(&self, book_id: i64) -> Result<Vec<Unit>, DbError> {
         self.with_conn(|c| {
             let mut stmt = c.prepare(
-                "SELECT id, book_id, idx, title, status, mastery FROM units
-                 WHERE book_id = ?1 ORDER BY idx",
+                "SELECT u.id, u.book_id, u.idx, u.title, u.status, u.mastery FROM units u
+                 LEFT JOIN unit_revisions r ON r.unit_id = u.id
+                 WHERE u.book_id = ?1 AND (r.unit_id IS NULL OR r.active_first = 1) ORDER BY u.idx",
             )?;
             let rows = stmt.query_map(params![book_id], map_unit)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -468,8 +692,9 @@ impl Db {
     pub fn list_unit_rows(&self, book_id: i64) -> Result<Vec<UnitRow>, DbError> {
         self.with_conn(|c| {
             let mut stmt = c.prepare(
-                "SELECT id, book_id, idx, title, content_path, status, mastery FROM units
-                 WHERE book_id = ?1 ORDER BY idx",
+                "SELECT u.id, u.book_id, u.idx, u.title, u.content_path, u.status, u.mastery FROM units u
+                 LEFT JOIN unit_revisions r ON r.unit_id = u.id
+                 WHERE u.book_id = ?1 AND (r.unit_id IS NULL OR r.active_first = 1) ORDER BY u.idx",
             )?;
             let rows = stmt.query_map(params![book_id], map_unit_row)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -526,8 +751,11 @@ impl Db {
             let mut stmt = c.prepare(
                 "SELECT u.id, u.book_id, u.idx, u.title, u.status, u.mastery, b.title
                  FROM units u JOIN books b ON b.id = u.book_id
-                 WHERE u.status = 'unread'
-                   AND u.idx = (SELECT MIN(idx) FROM units u2 WHERE u2.book_id = u.book_id AND u2.status = 'unread')
+                 LEFT JOIN unit_revisions r ON r.unit_id = u.id
+                 WHERE u.status = 'unread' AND (r.unit_id IS NULL OR r.active_first = 1)
+                   AND u.idx = (SELECT MIN(idx) FROM units u2 LEFT JOIN unit_revisions r2 ON r2.unit_id = u2.id
+                                WHERE u2.book_id = u.book_id AND u2.status = 'unread'
+                                  AND (r2.unit_id IS NULL OR r2.active_first = 1))
                  ORDER BY b.id",
             )?;
             let rows = stmt.query_map([], |row| {
@@ -891,8 +1119,7 @@ impl Db {
         knowledge_points: &[String],
         updated_at: &str,
     ) -> Result<(), DbError> {
-        let kps_json =
-            serde_json::to_string(knowledge_points).unwrap_or_else(|_| "[]".to_string());
+        let kps_json = serde_json::to_string(knowledge_points).unwrap_or_else(|_| "[]".to_string());
         self.with_write(|c| {
             c.execute(
                 "INSERT OR REPLACE INTO chapter_explanations (first_unit_id, explanation, knowledge_points, updated_at) VALUES (?1, ?2, ?3, ?4)",
@@ -906,10 +1133,12 @@ impl Db {
     pub fn prev_unit(&self, unit_id: i64) -> Result<Option<UnitRow>, DbError> {
         self.with_conn(|c| {
             c.query_row(
-                "SELECT id, book_id, idx, title, content_path, status, mastery FROM units
-                 WHERE book_id = (SELECT book_id FROM units WHERE id = ?1)
-                   AND idx < (SELECT idx FROM units WHERE id = ?1)
-                 ORDER BY idx DESC LIMIT 1",
+                "SELECT u.id, u.book_id, u.idx, u.title, u.content_path, u.status, u.mastery FROM units u
+                 LEFT JOIN unit_revisions r ON r.unit_id = u.id
+                 WHERE u.book_id = (SELECT book_id FROM units WHERE id = ?1)
+                   AND (r.unit_id IS NULL OR r.active_first = 1)
+                   AND u.idx < (SELECT idx FROM units WHERE id = ?1)
+                 ORDER BY u.idx DESC LIMIT 1",
                 params![unit_id],
                 map_unit_row,
             )
@@ -1238,8 +1467,13 @@ mod tests {
         let u2 = db.insert_unit(b, 1, "第一章（2）", "/c/1.txt").unwrap();
 
         assert!(db.get_chapter_explanation(u1).unwrap().is_none());
-        db.upsert_chapter_explanation(u1, "讲解 v1", &["要点甲".to_string()], "2026-10-09 10:00:00")
-            .unwrap();
+        db.upsert_chapter_explanation(
+            u1,
+            "讲解 v1",
+            &["要点甲".to_string()],
+            "2026-10-09 10:00:00",
+        )
+        .unwrap();
         let (text, kps) = db.get_chapter_explanation(u1).unwrap().unwrap();
         assert_eq!(text, "讲解 v1");
         assert_eq!(kps, vec!["要点甲".to_string()]);
@@ -1282,6 +1516,62 @@ mod tests {
 
         db.delete_book(b).unwrap();
         assert!(db.get_unit_summary(u).unwrap().is_none());
+    }
+
+    #[test]
+    fn restore_rejects_legacy_snapshot_before_replacing_local_data() {
+        let dir =
+            std::env::temp_dir().join(format!("ai-teacher-old-snapshot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("legacy.db");
+        let legacy = Connection::open(&path).unwrap();
+        legacy.execute_batch("CREATE TABLE books (id INTEGER PRIMARY KEY, title TEXT NOT NULL, source_path TEXT NOT NULL UNIQUE, format TEXT NOT NULL, added_at TEXT NOT NULL);
+            CREATE TABLE units (id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL, idx INTEGER NOT NULL, title TEXT NOT NULL, content_path TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'unread', mastery REAL);
+            PRAGMA user_version=1;
+            INSERT INTO books VALUES(1,'旧书','/tmp/legacy.md','md','2026-01-01');
+            INSERT INTO units VALUES(1,1,0,'旧章','/tmp/legacy.txt','unread',NULL);").unwrap();
+        drop(legacy);
+        let db = Db::open_in_memory().unwrap();
+        let local = db
+            .insert_book("本地书", "/tmp/local.md", "md", "2026-11-18")
+            .unwrap();
+        let error = db.restore_from_file(&path).unwrap_err();
+        assert!(
+            error.to_string().contains("与当前 SCHEMA 不一致"),
+            "旧备份必须在替换本地数据之前被拒绝：{error}"
+        );
+        assert_eq!(db.list_units(local).unwrap().len(), 0);
+        assert!(db
+            .find_book_by_source_path("/tmp/local.md")
+            .unwrap()
+            .is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn fresh_database_uses_current_schema_without_version_markers() {
+        let db = Db::open_in_memory().unwrap();
+        let version: i64 = db
+            .with_conn(|c| Ok(c.pragma_query_value(None, "user_version", |row| row.get(0))?))
+            .unwrap();
+        assert_eq!(version, 0, "开发期不把迁移版本写进实际数据库");
+        assert!(!SCHEMA.contains("ALTER TABLE"));
+    }
+
+    #[test]
+    fn legacy_table_semantics_are_rejected_instead_of_silently_mixed() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch(
+            "DROP TABLE unit_revisions;
+             CREATE TABLE unit_revisions (
+                 id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, group_title TEXT NOT NULL,
+                 unit_ids TEXT NOT NULL, unit_titles TEXT NOT NULL, contents TEXT NOT NULL
+             );",
+        ).unwrap();
+        let error = Db::init(conn).err().unwrap().to_string();
+        assert!(error.contains("不自动迁移"), "{error}");
     }
 
     #[test]

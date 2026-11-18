@@ -3,6 +3,7 @@ mod config;
 mod ingest;
 mod llm;
 mod scheduler;
+mod study;
 
 // 这三个模块同时被 `tests/` 下的集成测试使用（crate 外部视角），故设为 pub
 pub mod db;
@@ -44,6 +45,12 @@ pub fn run() {
             commands::get_book_detail,
             commands::set_unit_skipped,
             commands::set_chapter_skipped,
+            commands::search_book,
+            commands::set_learning_goal,
+            commands::delete_learning_goal,
+            commands::preview_resplit,
+            commands::resplit_unit,
+            commands::undo_resplit,
             commands::get_today,
             commands::get_unit_content,
             commands::start_reading,

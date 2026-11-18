@@ -8,6 +8,11 @@ export interface LlmSettings {
   model: string;
   auto_start_reading: boolean; // 打开全新章节时自动开始 AI 领读；默认 false
   disable_thinking: boolean; // 关闭模型思考模式提速（OpenAI 兼容协议 reasoning_effort）；默认 true
+  reading_model?: string | null; // 领读模型；空值回退主模型
+  quiz_model?: string | null; // 出题模型；空值回退主模型
+  grading_model?: string | null; // 判分模型；空值回退主模型
+  reading_style: string; // default | exam | popular | socratic；默认 default
+  reading_depth: string; // concise | standard | deep；默认 standard
 }
 
 export interface ConnectionTestResult {
@@ -105,7 +110,50 @@ export interface UnitSuggestion {
   unit: Unit;
 }
 
+export interface LearningGoal {
+  book_id: number;
+  book_title: string;
+  weeks: number;
+  remaining_units: number;
+  first_remaining_idx: number | null;
+  started_at: string;
+  completed_today: number;
+}
+
+export interface DailyGoal {
+  book_id: number;
+  book_title: string;
+  weeks: number;
+  days_left: number;
+  remaining_units: number;
+  daily_target: number;
+  completed_today: number;
+  today_units: Unit[];
+}
+
+export interface SearchHit {
+  unit_id: number;
+  unit_title: string;
+  chapter_title: string;
+  quote: string;
+  context: string;
+  start: number;
+  end: number;
+  title_search: boolean;
+}
+
+export interface ResplitPreview {
+  chapter_title: string;
+  target_chars: number;
+  unit_count: number;
+  preserved_unit_ids: number[];
+  replaced_unit_ids: number[];
+  explanation_unit_ids: number[];
+  preview: string[];
+}
+
 export interface TodayPlan {
+  goals: DailyGoal[];
   due_reviews: ReviewItem[];
   next_units: UnitSuggestion[]; // 每本在读的书的下一个未学单元
   reviewed_today: number; // 今日已完成的复习数（答题与自评都算）
@@ -134,6 +182,8 @@ export interface WrongQuestion {
 export interface BookDetail {
   book: BookSummary;
   units: Unit[];
+  learning_goal: LearningGoal | null;
+  resplit_unit_ids: number[];
   chapters: ChapterGroup[]; // 与 units 同一数据源的章分组视图
 }
 
@@ -159,7 +209,7 @@ export interface BackupStats {
 }
 
 export interface BackupManifest {
-  schema_version: number; // 数据版本；高于当前应用则拒绝恢复
+  schema_version: number; // 备份清单的历史信息；实际兼容性以完整表结构校验为准
   app_version: string;
   created_at: string; // RFC3339
   device: string;
@@ -198,6 +248,10 @@ function errMsg(e: unknown): string {
 const WRITE_COMMANDS = new Set([
   "save_settings",
   "import_book",
+  "set_learning_goal",
+  "delete_learning_goal",
+  "resplit_unit",
+  "undo_resplit",
   "remove_book",
   "set_unit_skipped",
   "set_chapter_skipped",
@@ -248,6 +302,12 @@ export const api = {
   listBooks: () => call<BookSummary[]>("list_books"),
   removeBook: (bookId: number) => call<void>("remove_book", { bookId }),
   getBookDetail: (bookId: number) => call<BookDetail>("get_book_detail", { bookId }),
+  searchBook: (bookId: number, query: string) => call<SearchHit[]>("search_book", { bookId, query }),
+  setLearningGoal: (bookId: number, weeks: number) => call<void>("set_learning_goal", { bookId, weeks }),
+  deleteLearningGoal: (bookId: number) => call<void>("delete_learning_goal", { bookId }),
+  previewResplit: (unitId: number, targetChars: number) => call<ResplitPreview>("preview_resplit", { unitId, targetChars }),
+  resplitUnit: (unitId: number, targetChars: number) => call<Unit[]>("resplit_unit", { unitId, targetChars }),
+  undoResplit: (unitId: number) => call<Unit[]>("undo_resplit", { unitId }),
 
   // 今日
   getToday: () => call<TodayPlan>("get_today"),

@@ -99,15 +99,17 @@
           v-model:value="answer"
           type="textarea"
           :rows="4"
-          placeholder="请输入你的答案…"
+          placeholder="用自己的话说说，一两句也可以…"
           :disabled="result !== null"
         />
 
         <n-alert
           v-if="result"
           class="q-result"
-          :type="result.correct ? 'success' : 'error'"
-          :title="result.correct ? '回答正确' : '回答错误'"
+          :type="result.correct ? 'success' : (current.qtype === 'short' ? 'warning' : 'error')"
+          :title="current.qtype === 'short'
+            ? (result.correct ? '理解到位' : '再补充一点')
+            : (result.correct ? '回答正确' : '回答错误')"
         >
           <div class="q-line q-kp-result">
             <n-tag type="info" size="small" :bordered="false">考点：{{ current.knowledge_point }}</n-tag>

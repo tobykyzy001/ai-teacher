@@ -131,9 +131,11 @@
             <n-card title="原文" class="section reading-card">
               <div ref="unitWrap" class="unit-wrap">
                 <template v-for="item in segmentBlocks" :key="item.seg.unit.id">
+                  <div :data-search-unit="item.seg.unit.id">
                   <h4
                     v-if="segmentBlocks.length > 1"
                     :id="`unit-${item.seg.unit.id}`"
+                    :data-unit-id="item.seg.unit.id"
                     class="seg-title"
                   >
                     {{ item.seg.unit.title }}
@@ -149,10 +151,13 @@
                     <div
                       v-else-if="block.html"
                       class="unit-content md"
+                      data-unit-content
+                      :data-unit-id="item.seg.unit.id"
                       :style="{ fontSize: `${fontSize}px`, lineHeight }"
                       v-html="block.html"
                     ></div>
                   </template>
+                  </div>
                 </template>
               </div>
             </n-card>
@@ -432,6 +437,7 @@ import {
 } from "naive-ui";
 import { api, type ChapterContent, type ChapterSegment, type ReadingSession, type UnitStatus } from "../api";
 import { commitComposingInput, errText } from "../utils";
+import { clearSearchMarks, findSearchRange } from "../search-jump";
 import { useThemeStore } from "../stores/theme";
 import { THEME_OPTIONS } from "../theme-mode";
 
@@ -451,6 +457,8 @@ interface ContentBlock {
 interface SegmentBlocks {
   seg: ChapterSegment;
   blocks: ContentBlock[];
+  startOffset: number; // 块在单元原始 Markdown 中的 Unicode 偏移
+  sourceText?: string;
 }
 
 type TagType = "default" | "primary" | "info" | "success" | "warning" | "error";
@@ -567,11 +575,15 @@ onBeforeUnmount(() => {
 
 // 各小节的正文块（文本/图片）：EPUB 导入时插图被抽成 `![alt](文件名)` 标记段，这里原位还原
 const segmentBlocks = computed<SegmentBlocks[]>(
-  () =>
-    chapter.value?.segments.map((seg) => ({
-      seg,
-      blocks: contentBlocks(seg.content),
-    })) ?? [],
+  () => {
+    let sourceOffset = 0;
+    return chapter.value?.segments.map((seg) => {
+      const blocks = contentBlocks(seg.content);
+      const startOffset = sourceOffset;
+      sourceOffset += Array.from(seg.content).length + 2;
+      return { seg, blocks, startOffset, sourceText: seg.content };
+    }) ?? [];
+  },
 );
 
 function contentBlocks(content: string): ContentBlock[] {
@@ -603,6 +615,35 @@ function imgSrc(img: { name: string }): string {
 function onImgError(e: Event): void {
   (e.target as HTMLElement).style.display = "none";
 }
+
+// 书内搜索命中：直接操作已渲染的 DOM；不改原文、不拼接图片目录。
+let searchJumpGeneration = 0;
+async function locateSearchHit(): Promise<void> {
+  const generation = ++searchJumpGeneration;
+  clearSearchMarks(unitWrap.value);
+  const query = typeof route.query.q === "string" ? route.query.q : "";
+  if (!query || !unitWrap.value || !chapter.value) return;
+  await nextTick();
+  if (generation !== searchJumpGeneration) return;
+  const anchor = Number(route.query.focus) || Number(route.params.unitId);
+  const range = findSearchRange(unitWrap.value, query, anchor, route.query.titleSearch === "1");
+  if (!range) {
+    document.getElementById(`unit-${anchor}`)?.scrollIntoView({ block: "start" });
+    message.info("已定位到所在小节");
+    return;
+  }
+  const mark = document.createElement("mark");
+  mark.className = "native-search";
+  try {
+    range.surroundContents(mark);
+    mark.scrollIntoView({ block: "center", behavior: "auto" });
+  } catch {
+    range.startContainer.parentElement?.scrollIntoView({ block: "center", behavior: "auto" });
+  }
+}
+watch(() => [route.query.q, route.query.focus, route.query.start, route.query.titleSearch], () => {
+  if (chapter.value) void nextTick(locateSearchHit);
+});
 
 // 划词提问状态
 const pageEl = ref<HTMLElement | null>(null);
@@ -649,6 +690,7 @@ async function load(): Promise<void> {
 }
 
 function resetState(): void {
+  searchJumpGeneration += 1;
   chapter.value = null;
   session.value = null;
   explainText.value = "";
@@ -684,6 +726,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  searchJumpGeneration += 1;
   document.removeEventListener("mouseup", onDocMouseup);
   document.removeEventListener("mousedown", onDocMousedown);
   document.removeEventListener("keydown", onKeydown);
@@ -696,7 +739,8 @@ onBeforeUnmount(() => {
 
 async function scrollAfterLoad(): Promise<void> {
   await nextTick();
-  if (Number.isInteger(focusUnitId.value) && focusUnitId.value > 0) {
+  if (route.query.q) await locateSearchHit();
+  else if (Number.isInteger(focusUnitId.value) && focusUnitId.value > 0) {
     document.getElementById(`unit-${focusUnitId.value}`)?.scrollIntoView({ block: "start" });
   } else {
     pageEl.value?.scrollIntoView({ block: "start" });
@@ -822,6 +866,7 @@ async function onAsk(): Promise<void> {
 
 function onDocMouseup(e: MouseEvent): void {
   if (selBtnEl.value?.contains(e.target as Node)) return;
+  clearSearchMarks(unitWrap.value);
   selShow.value = false;
   const wrap = unitWrap.value;
   if (!wrap) return;
@@ -1102,6 +1147,12 @@ function renderMarkdown(src: string): string {
 </script>
 
 <style scoped>
+mark.native-search {
+  background: color-mix(in srgb, var(--sys-orange) 32%, transparent);
+  color: inherit;
+  padding: 0;
+}
+
 .page.reading-page {
   max-width: none;
 }

@@ -34,6 +34,10 @@
               percent(detail.book.done_units, detail.book.total_units)
             }}%）
           </div>
+          <n-space class="book-tools">
+            <n-button class="btn-tinted" @click="searchShow = true">书内搜索</n-button>
+            <n-button class="btn-tinted" @click="goalShow = true">学习目标</n-button>
+          </n-space>
         </div>
       </div>
 
@@ -95,6 +99,12 @@
                   </n-tag>
                 </div>
                 <div class="unit-actions">
+                  <n-button
+                    v-if="unit.status === 'unread' && unit.mastery === null"
+                    size="small"
+                    @click="openResplit(unit)"
+                  >拆分</n-button>
+                  <n-button v-if="detail?.resplit_unit_ids.includes(unit.id)" size="small" quaternary @click="undoResplit(unit)">撤销拆分</n-button>
                   <n-tooltip>
                     <template #trigger>
                       <n-button
@@ -122,11 +132,58 @@
       </n-list>
       <n-empty v-else description="本书还没有解析出任何单元" />
     </template>
+
+    <n-modal v-model:show="searchShow" preset="card" title="书内搜索" :style="{ width: '680px', maxWidth: '92vw' }">
+      <n-space vertical :size="12">
+        <n-input v-model:value="searchQuery" clearable placeholder="输入正文或小节标题中的关键词" @keydown="onSearchKeydown" />
+        <n-button type="primary" :loading="searching" @mousedown="commitComposingInput" @click="runSearch">搜索</n-button>
+        <n-alert v-if="searchError" type="error">{{ searchError }}</n-alert>
+        <n-empty v-else-if="searched && hits.length === 0" description="没有命中，请换一个关键词。" />
+        <div v-if="hits.length" class="search-results">
+          <n-button v-for="(hit, index) in hits" :key="`${hit.unit_id}-${hit.start}-${index}`" text class="search-hit" @click="goHit(hit)">
+            <span class="search-hit-title">{{ hit.chapter_title }} · {{ hit.unit_title }}</span>
+            <span>{{ hit.context }}</span>
+          </n-button>
+        </div>
+      </n-space>
+    </n-modal>
+
+    <n-modal v-model:show="goalShow" preset="card" title="学习目标" :style="{ width: '460px', maxWidth: '92vw' }">
+      <n-form label-placement="top" @submit.prevent>
+        <n-form-item label="在几周内读完这本书？">
+          <n-input-number v-model:value="goalWeeks" :min="1" :max="104" :precision="0" style="width: 100%" />
+        </n-form-item>
+        <p class="muted small">目标从今天起计算，只安排阅读进度；到期复习仍完整保留。每天的小节数按剩余天数自动均摊。</p>
+        <n-space>
+          <n-button type="primary" :loading="goalBusy" @click="saveGoal">保存目标</n-button>
+          <n-button :loading="goalBusy" @click="clearGoal">清除目标</n-button>
+        </n-space>
+      </n-form>
+      <n-alert v-if="detail?.learning_goal" type="info">
+        已设 {{ detail.learning_goal.weeks }} 周目标，起始日 {{ detail.learning_goal.started_at }}，剩余 {{ detail.learning_goal.remaining_units }} 个小节。可在「今日学习」查看每日安排。
+      </n-alert>
+    </n-modal>
+
+    <n-modal v-model:show="resplitShow" preset="card" title="调整小节粒度" :style="{ width: '520px', maxWidth: '92vw' }" :mask-closable="!resplitBusy">
+      <p class="muted small">拆分「{{ resplitUnitRow?.title }}」，保留本章连续阅读。已有题目、复习、掌握度或章讲解的小节不能拆分。</p>
+      <n-form-item label="每个小节目的字数（300–5000）">
+        <n-input-number v-model:value="targetChars" :min="300" :max="5000" :step="100" :precision="0" style="width: 100%" />
+      </n-form-item>
+      <n-space>
+        <n-button :loading="previewBusy" @click="loadPreview">预览</n-button>
+        <n-button v-if="preview" type="primary" :loading="resplitBusy" @click="commitResplit">确认拆分</n-button>
+        <n-button @click="resplitShow = false">取消</n-button>
+      </n-space>
+      <n-list v-if="preview" bordered class="split-preview">
+        <n-list-item v-for="title in preview.preview" :key="title">{{ title }}</n-list-item>
+      </n-list>
+      <p v-if="preview" class="muted small">确认后将产生 {{ preview.unit_count }} 个小节。可通过撤销恢复原正文与标题；新子小节开始学习后不能撤销。</p>
+    </n-modal>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { CheckmarkCircle, CheckmarkCircleOutline, ChevronForward } from "@vicons/ionicons5";
 import {
@@ -135,6 +192,12 @@ import {
   NIcon,
   NList,
   NListItem,
+  NInput,
+  NInputNumber,
+  NModal,
+  NForm,
+  NFormItem,
+  NAlert,
   NProgress,
   NSpace,
   NSpin,
@@ -142,8 +205,8 @@ import {
   NTooltip,
   useMessage,
 } from "naive-ui";
-import { api, type BookDetail, type ChapterGroup, type Unit, type UnitStatus } from "../api";
-import { errText, fmtDate, percent } from "../utils";
+import { api, type BookDetail, type ChapterGroup, type ResplitPreview, type SearchHit, type Unit, type UnitStatus } from "../api";
+import { commitComposingInput, errText, fmtDate, percent } from "../utils";
 import { useLibraryStore } from "../stores/library";
 
 type TagType = "default" | "primary" | "info" | "success" | "warning" | "error";
@@ -180,6 +243,7 @@ async function load(): Promise<void> {
   try {
     const d = await api.getBookDetail(bookId.value);
     detail.value = d;
+    goalWeeks.value = d.learning_goal?.weeks ?? 4;
     library.upsert(d.book);
   } catch (e) {
     error.value = errText(e);
@@ -272,6 +336,109 @@ function goChapter(firstUnitId: number): void {
 function goQuiz(unitId: number): void {
   router.push(`/quiz/${unitId}`);
 }
+
+// ---------- 全书检索 ----------
+const searchShow = ref(false);
+const searchQuery = ref("");
+const searching = ref(false);
+const searched = ref(false);
+const searchError = ref("");
+const hits = ref<SearchHit[]>([]);
+let searchGeneration = 0;
+
+function onSearchKeydown(e: KeyboardEvent): void {
+  if (e.key === "Enter" && !e.isComposing && e.keyCode !== 229) void runSearch();
+}
+
+watch(searchQuery, () => { searched.value = false; searchError.value = ""; hits.value = []; });
+
+async function runSearch(): Promise<void> {
+  if (searching.value) return;
+  const query = searchQuery.value.trim();
+  if (!query) { message.warning("请先输入要查找的内容"); return; }
+  searching.value = true;
+  searchError.value = "";
+  const generation = ++searchGeneration;
+  try {
+    const result = await api.searchBook(bookId.value, query);
+    if (generation !== searchGeneration) return;
+    hits.value = result;
+    searched.value = true;
+  } catch (e) {
+    if (generation !== searchGeneration) return;
+    searchError.value = errText(e);
+    hits.value = [];
+  } finally {
+    if (generation === searchGeneration) searching.value = false;
+  }
+}
+
+function goHit(hit: SearchHit): void {
+  searchShow.value = false;
+  void router.push({ path: `/reading/${hit.unit_id}`, query: { focus: hit.unit_id, q: hit.quote, start: hit.start, titleSearch: hit.title_search ? 1 : 0 } });
+}
+
+// ---------- 每书目标 ----------
+const goalShow = ref(false);
+const goalWeeks = ref<number>(4);
+const goalBusy = ref(false);
+
+async function saveGoal(): Promise<void> {
+  const weeks = goalWeeks.value;
+  if (!Number.isInteger(weeks) || weeks < 1 || weeks > 104) { message.warning("请输入 1–104 的整周数"); return; }
+  goalBusy.value = true;
+  try { await api.setLearningGoal(bookId.value, weeks); await load(); goalShow.value = false; message.success(`已设定 ${weeks} 周阅读目标，可在「今日学习」查看每日安排`); }
+  catch (e) { message.error(`保存目标失败：${errText(e)}`); }
+  finally { goalBusy.value = false; }
+}
+
+async function clearGoal(): Promise<void> {
+  goalBusy.value = true;
+  try { await api.deleteLearningGoal(bookId.value); await load(); goalShow.value = false; message.success("已清除此书的阅读目标；学习记录不变"); }
+  catch (e) { message.error(`清除目标失败：${errText(e)}`); }
+  finally { goalBusy.value = false; }
+}
+
+// ---------- 单小节拆分（后端再次校验历史记录） ----------
+const resplitShow = ref(false);
+const resplitUnitRow = ref<Unit | null>(null);
+const targetChars = ref<number>(1000);
+const preview = ref<ResplitPreview | null>(null);
+const previewBusy = ref(false);
+const resplitBusy = ref(false);
+watch(targetChars, () => { preview.value = null; });
+
+function openResplit(unit: Unit): void {
+  resplitUnitRow.value = unit;
+  preview.value = null;
+  resplitShow.value = true;
+}
+
+async function loadPreview(): Promise<void> {
+  if (!resplitUnitRow.value) return;
+  previewBusy.value = true;
+  try { preview.value = await api.previewResplit(resplitUnitRow.value.id, targetChars.value); }
+  catch (e) { preview.value = null; message.error(`无法预览：${errText(e)}`); }
+  finally { previewBusy.value = false; }
+}
+
+async function commitResplit(): Promise<void> {
+  if (!resplitUnitRow.value || !preview.value) return;
+  resplitBusy.value = true;
+  try {
+    await api.resplitUnit(resplitUnitRow.value.id, targetChars.value);
+    resplitShow.value = false;
+    message.success("小节已拆分，可立即撤销恢复原边界");
+    await load();
+  } catch (e) { message.error(`拆分失败：${errText(e)}`); }
+  finally { resplitBusy.value = false; }
+}
+
+async function undoResplit(unit: Unit): Promise<void> {
+  if (!window.confirm(`撤销「${unit.title}」所属的拆分并恢复原小节吗？仅未学习的新小节才可以撤销。`)) return;
+  try { await api.undoResplit(unit.id); message.success("已恢复原小节"); await load(); }
+  catch (e) { message.error(`撤销失败：${errText(e)}`); }
+}
 </script>
 
 <style scoped>
@@ -356,6 +523,47 @@ function goQuiz(unitId: number): void {
   gap: 10px;
   min-width: 0;
   flex: 1;
+}
+
+.book-tools {
+  margin-top: var(--space-3);
+}
+
+.search-results {
+  max-height: 60vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.search-hit {
+  display: block;
+  padding: var(--space-3) 0;
+  white-space: normal;
+  text-align: left;
+  line-height: 1.75;
+  border-bottom: 1px solid var(--separator);
+}
+
+.search-hit:last-child {
+  border-bottom: none;
+}
+
+.search-hit-title {
+  display: block;
+  font-weight: 600;
+  margin-bottom: var(--space-1);
+  color: var(--label);
+}
+
+.split-preview {
+  margin-top: var(--space-4);
+  max-height: 35vh;
+  overflow-y: auto;
+}
+
+.goal-settings {
+  display: inline-block;
+  margin-top: var(--space-3);
 }
 
 .unit-idx {
